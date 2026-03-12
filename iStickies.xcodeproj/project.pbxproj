@@ -287,7 +287,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = iStickies/iStickies.entitlements;
+					CODE_SIGN_ENTITLEMENTS = iStickies/iStickies.entitlements;
+					"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = iStickies/iStickies-macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 3JXY2MS2Y3;
@@ -305,9 +306,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				"INFOPLIST_KEY_UISupportsDocumentBrowser[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UISupportsDocumentBrowser[sdk=iphonesimulator*]" = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
+					IPHONEOS_DEPLOYMENT_TARGET = 18.4;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -316,12 +315,11 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				XROS_DEPLOYMENT_TARGET = 2.4;
-			};
+					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+					SWIFT_EMIT_LOC_STRINGS = YES;
+					SWIFT_VERSION = 5.0;
+					TARGETED_DEVICE_FAMILY = "1,2";
+				};
 			name = Debug;
 		};
 		F9D45DB12DD67E9400DF79DC /* Release */ = {
@@ -329,7 +327,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = iStickies/iStickies.entitlements;
+					CODE_SIGN_ENTITLEMENTS = iStickies/iStickies.entitlements;
+					"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = iStickies/iStickies-macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 3JXY2MS2Y3;
@@ -347,9 +346,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				"INFOPLIST_KEY_UISupportsDocumentBrowser[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UISupportsDocumentBrowser[sdk=iphonesimulator*]" = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
+					IPHONEOS_DEPLOYMENT_TARGET = 18.4;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -358,12 +355,11 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				XROS_DEPLOYMENT_TARGET = 2.4;
-			};
+					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+					SWIFT_EMIT_LOC_STRINGS = YES;
+					SWIFT_VERSION = 5.0;
+					TARGETED_DEVICE_FAMILY = "1,2";
+				};
 			name = Release;
 		};
 		F9D45DB22DD67E9400DF79DC /* Debug */ = {
