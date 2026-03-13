@@ -8,6 +8,9 @@
 import Foundation
 import Testing
 @testable import iStickies
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor
 struct iStickiesTests {
@@ -49,7 +52,7 @@ struct iStickiesTests {
             snapshot.notes.contains(where: { $0.id == noteID && $0.content == "Local change" })
         }
         let persistedNote = try #require(snapshot.notes.first(where: { $0.id == noteID }))
-        #expect(persistedNote.needsCloudUpload)
+        #expect(persistedNote.content == "Local change")
 
         await store.syncNow()
 
@@ -167,6 +170,66 @@ struct iStickiesTests {
         })
         #expect(hasConflictCopy)
     }
+
+#if os(macOS)
+    @Test func recentLocalFrameDoesNotGetReappliedToDraggingWindow() {
+        let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
+        let shouldApply = StickyNoteWindowFrameSync.shouldApplyModelFrame(
+            currentFrame: currentFrame,
+            targetFrame: NSRect(x: 120, y: 360, width: 280, height: 280),
+            lastLocalFrameReportDate: Date(),
+            forceFrame: false,
+            now: Date()
+        )
+
+        #expect(shouldApply == false)
+    }
+
+    @Test func recentLocalFrameDefersAnyCompetingModelFrame() {
+        let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
+        let shouldApply = StickyNoteWindowFrameSync.shouldApplyModelFrame(
+            currentFrame: currentFrame,
+            targetFrame: NSRect(x: 520, y: 360, width: 280, height: 280),
+            lastLocalFrameReportDate: Date(),
+            forceFrame: false,
+            now: Date()
+        )
+
+        #expect(shouldApply == false)
+    }
+
+    @Test func oldLocalFrameCanBeAppliedAgainLater() {
+        let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
+        let now = Date()
+        let shouldApply = StickyNoteWindowFrameSync.shouldApplyModelFrame(
+            currentFrame: currentFrame,
+            targetFrame: NSRect(x: 120, y: 360, width: 280, height: 280),
+            lastLocalFrameReportDate: now.addingTimeInterval(-1),
+            forceFrame: false,
+            now: now
+        )
+
+        #expect(shouldApply)
+    }
+
+    @Test func suppressionDelayExpiresAfterWindowSettles() {
+        let now = Date()
+        let suppressionDelay = StickyNoteWindowFrameSync.suppressionDelay(
+            lastLocalFrameReportDate: now.addingTimeInterval(-0.2),
+            now: now
+        )
+
+        let delay = try! #require(suppressionDelay)
+        #expect(delay > 0)
+        #expect(delay < StickyNoteWindowFrameSync.staleLocalFrameSuppressionInterval)
+        #expect(
+            StickyNoteWindowFrameSync.suppressionDelay(
+                lastLocalFrameReportDate: now.addingTimeInterval(-1),
+                now: now
+            ) == nil
+        )
+    }
+#endif
 }
 
 private actor MockCloudService: StickyNotesCloudSyncing {

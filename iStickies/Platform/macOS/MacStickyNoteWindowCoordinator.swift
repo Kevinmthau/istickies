@@ -133,6 +133,10 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     private var isPresentingDeleteConfirmation = false
     private var isClosingFromCoordinator = false
     private var isClosingForApplicationTermination = false
+    private var isApplyingModelFrame = false
+    private var lastLocalFrameReportDate: Date?
+    private var pendingModelFrame: NSRect?
+    private var pendingModelFrameTask: Task<Void, Never>?
     private var terminationObserver: NSObjectProtocol?
 
     init(
@@ -191,6 +195,8 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     }
 
     deinit {
+        pendingModelFrameTask?.cancel()
+
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
         }
@@ -209,6 +215,26 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
             width: preferredFrame.width,
             height: preferredFrame.height
         ))
+
+        guard StickyNoteWindowFrameSync.shouldApplyModelFrame(
+            currentFrame: frame,
+            targetFrame: targetFrame,
+            lastLocalFrameReportDate: lastLocalFrameReportDate,
+            forceFrame: forceFrame
+        ) else {
+            if forceFrame || frame.distanceSquared(to: targetFrame) <= 9 {
+                clearPendingModelFrame()
+            } else if let delay = StickyNoteWindowFrameSync.suppressionDelay(
+                lastLocalFrameReportDate: lastLocalFrameReportDate
+            ) {
+                schedulePendingModelFrame(targetFrame, after: delay)
+            }
+            return
+        }
+
+        clearPendingModelFrame()
+        isApplyingModelFrame = true
+        defer { isApplyingModelFrame = false }
 
         if forceFrame || frame.distanceSquared(to: targetFrame) > 9 {
             setFrame(targetFrame, display: true, animate: false)
@@ -249,11 +275,56 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         )
     }
 
+    private func schedulePendingModelFrame(_ targetFrame: NSRect, after delay: TimeInterval) {
+        pendingModelFrame = targetFrame
+        pendingModelFrameTask?.cancel()
+        pendingModelFrameTask = Task { @MainActor [weak self] in
+            let delay = max(delay, 0)
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+
+            guard !Task.isCancelled else { return }
+            self?.applyPendingModelFrameIfNeeded()
+        }
+    }
+
+    private func applyPendingModelFrameIfNeeded() {
+        guard let pendingModelFrame else { return }
+
+        if frame.distanceSquared(to: pendingModelFrame) <= 9 {
+            clearPendingModelFrame()
+            return
+        }
+
+        if let delay = StickyNoteWindowFrameSync.suppressionDelay(
+            lastLocalFrameReportDate: lastLocalFrameReportDate
+        ) {
+            schedulePendingModelFrame(pendingModelFrame, after: delay)
+            return
+        }
+
+        clearPendingModelFrame()
+        isApplyingModelFrame = true
+        defer { isApplyingModelFrame = false }
+        setFrame(pendingModelFrame, display: true, animate: false)
+    }
+
+    private func clearPendingModelFrame() {
+        pendingModelFrame = nil
+        pendingModelFrameTask?.cancel()
+        pendingModelFrameTask = nil
+    }
+
     func windowDidMove(_ notification: Notification) {
+        guard !isApplyingModelFrame else { return }
+        lastLocalFrameReportDate = Date()
         store.updatePreferredFrame(id: noteID, frame: frame.stickyFrame)
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
+        guard !isApplyingModelFrame else { return }
+        lastLocalFrameReportDate = Date()
         store.updatePreferredFrame(id: noteID, frame: frame.stickyFrame)
     }
 
@@ -276,6 +347,44 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         isClosingFromCoordinator = false
         isPresentingDeleteConfirmation = false
         isClosingForApplicationTermination = false
+    }
+}
+
+enum StickyNoteWindowFrameSync {
+    static let staleLocalFrameSuppressionInterval: TimeInterval = 0.5
+
+    static func shouldApplyModelFrame(
+        currentFrame: NSRect,
+        targetFrame: NSRect,
+        lastLocalFrameReportDate: Date?,
+        forceFrame: Bool,
+        now: Date = Date()
+    ) -> Bool {
+        if forceFrame {
+            return true
+        }
+
+        guard currentFrame.distanceSquared(to: targetFrame) > 9 else {
+            return false
+        }
+
+        return suppressionDelay(lastLocalFrameReportDate: lastLocalFrameReportDate, now: now) == nil
+    }
+
+    static func suppressionDelay(
+        lastLocalFrameReportDate: Date?,
+        now: Date = Date()
+    ) -> TimeInterval? {
+        guard let lastLocalFrameReportDate else {
+            return nil
+        }
+
+        let elapsed = now.timeIntervalSince(lastLocalFrameReportDate)
+        guard elapsed >= 0, elapsed < staleLocalFrameSuppressionInterval else {
+            return nil
+        }
+
+        return staleLocalFrameSuppressionInterval - elapsed
     }
 }
 

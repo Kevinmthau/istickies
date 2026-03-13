@@ -10,7 +10,7 @@ struct iStickiesApp: App {
 #endif
 
     init() {
-        let store = StickyNotesStore()
+        let store = StickyNotesStore(autoLoad: !StickyNotesRuntime.isRunningHostedUnitTests)
         _store = StateObject(wrappedValue: store)
 
 #if os(macOS)
@@ -41,6 +41,11 @@ final class StickyNotesAppDelegate: NSObject, NSApplicationDelegate {
     static weak var store: StickyNotesStore?
 
     private var isWaitingForTerminationReply = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard StickyNotesRuntime.isRunningHostedUnitTests else { return }
+        NSApp.setActivationPolicy(.prohibited)
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isWaitingForTerminationReply else { return .terminateLater }
@@ -90,6 +95,13 @@ private struct StickyNotesCommands: Commands {
     }
 }
 #endif
+
+private enum StickyNotesRuntime {
+    static var isRunningHostedUnitTests: Bool {
+        NSClassFromString("XCTestCase") != nil
+            && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+}
 
 extension Notification.Name {
     static let stickyNotesWillTerminate = Notification.Name("StickyNotesWillTerminate")

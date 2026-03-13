@@ -478,52 +478,52 @@
 			};
 			name = Release;
 		};
-		F9D45DB52DD67E9400DF79DC /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 3JXY2MS2Y3;
-				GENERATE_INFOPLIST_FILE = YES;
+			F9D45DB52DD67E9400DF79DC /* Debug */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					BUNDLE_LOADER = "$(TEST_HOST)";
+					CODE_SIGN_STYLE = Automatic;
+					CURRENT_PROJECT_VERSION = 1;
+					DEVELOPMENT_TEAM = 3JXY2MS2Y3;
+					GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
 				MACOSX_DEPLOYMENT_TARGET = 15.4;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mushpot.iStickiesTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iStickies.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iStickies";
-				XROS_DEPLOYMENT_TARGET = 2.4;
+					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+					SWIFT_EMIT_LOC_STRINGS = NO;
+					SWIFT_VERSION = 5.0;
+					TARGETED_DEVICE_FAMILY = "1,2,7";
+					TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iStickies.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iStickies";
+					XROS_DEPLOYMENT_TARGET = 2.4;
+				};
+				name = Debug;
 			};
-			name = Debug;
-		};
-		F9D45DB62DD67E9400DF79DC /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 3JXY2MS2Y3;
-				GENERATE_INFOPLIST_FILE = YES;
+			F9D45DB62DD67E9400DF79DC /* Release */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					BUNDLE_LOADER = "$(TEST_HOST)";
+					CODE_SIGN_STYLE = Automatic;
+					CURRENT_PROJECT_VERSION = 1;
+					DEVELOPMENT_TEAM = 3JXY2MS2Y3;
+					GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
 				MACOSX_DEPLOYMENT_TARGET = 15.4;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mushpot.iStickiesTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iStickies.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iStickies";
-				XROS_DEPLOYMENT_TARGET = 2.4;
+					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+					SWIFT_EMIT_LOC_STRINGS = NO;
+					SWIFT_VERSION = 5.0;
+					TARGETED_DEVICE_FAMILY = "1,2,7";
+					TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iStickies.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iStickies";
+					XROS_DEPLOYMENT_TARGET = 2.4;
+				};
+				name = Release;
 			};
-			name = Release;
-		};
 		F9D45DB82DD67E9400DF79DC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {

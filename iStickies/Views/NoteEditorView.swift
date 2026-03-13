@@ -45,7 +45,7 @@ struct NoteEditorView: View {
                 hasLoadedDraft = true
             }
             .onChange(of: draftContent) { _, newValue in
-                scheduleDraftPersistence(newValue)
+                scheduleDraftPersistence()
             }
             .onReceive(NotificationCenter.default.publisher(for: .stickyNotesWillTerminate)) { _ in
                 flushDraftPersistence()
@@ -102,12 +102,12 @@ struct NoteEditorView: View {
     }
 
 #if os(macOS)
-    private func scheduleDraftPersistence(_ content: String) {
+    private func scheduleDraftPersistence() {
         saveTask?.cancel()
         saveTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
-            persistDraftContent(content)
+            persistDraftContent(draftContent)
         }
     }
 

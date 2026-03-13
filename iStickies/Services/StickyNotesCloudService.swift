@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import Security
 
 struct CloudSyncConflict: Sendable {
     let localNoteID: String
@@ -21,6 +22,50 @@ protocol StickyNotesCloudSyncing: Sendable {
     func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult
 }
 
+enum StickyNotesCloudServiceFactory {
+    static func makeDefaultService() -> any StickyNotesCloudSyncing {
+        guard hasCloudKitEntitlement else {
+            return DisabledStickyNotesCloudService()
+        }
+
+        return CloudKitStickyNotesCloudService()
+    }
+
+    private static var hasCloudKitEntitlement: Bool {
+        guard let task = SecTaskCreateFromSelf(nil) else {
+            return false
+        }
+
+        let entitlement = SecTaskCopyValueForEntitlement(
+            task,
+            "com.apple.developer.icloud-services" as CFString,
+            nil
+        )
+
+        guard let services = entitlement as? [String] else {
+            return false
+        }
+
+        return services.contains("CloudKit") || services.contains("CloudKit-Anonymous")
+    }
+}
+
+actor DisabledStickyNotesCloudService: StickyNotesCloudSyncing {
+    func restore(stateSerializationData: Data?) async {}
+
+    func currentStateSerializationData() async -> Data? {
+        nil
+    }
+
+    func fetchAllNotes() async throws -> [StickyNote] {
+        []
+    }
+
+    func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {
+        CloudSyncBatchResult()
+    }
+}
+
 actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     private let database: CKDatabase
 
@@ -35,8 +80,16 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     private var didHydrateRemoteZoneSnapshot = false
     private var didAttemptLegacyDefaultZoneImport = false
 
-    init(container: CKContainer = .default()) {
+    init(container: CKContainer = CloudKitStickyNotesCloudService.defaultContainer()) {
         database = container.privateCloudDatabase
+    }
+
+    private static func defaultContainer() -> CKContainer {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier, !bundleIdentifier.isEmpty else {
+            return .default()
+        }
+
+        return CKContainer(identifier: "iCloud.\(bundleIdentifier)")
     }
 
     func restore(stateSerializationData: Data?) async {

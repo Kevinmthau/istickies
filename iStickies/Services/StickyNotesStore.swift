@@ -27,7 +27,7 @@ final class StickyNotesStore: ObservableObject {
 
     init(
         fileStore: StickyNotesFileStore = StickyNotesFileStore(),
-        cloudService: any StickyNotesCloudSyncing = CloudKitStickyNotesCloudService(),
+        cloudService: any StickyNotesCloudSyncing = StickyNotesCloudServiceFactory.makeDefaultService(),
         autoLoad: Bool = true
     ) {
         self.fileStore = fileStore
