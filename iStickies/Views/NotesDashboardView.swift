@@ -159,26 +159,75 @@ struct MacNotesDashboardView: View {
     }
 }
 #else
+private struct StickyCardView: View {
+    let note: StickyNote
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(note.title)
+                .font(.headline)
+                .lineLimit(2)
+
+            Text(note.summary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+
+            Spacer(minLength: 0)
+
+            HStack {
+                if note.needsCloudUpload {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(note.lastModified, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
+        .background(note.color.tint)
+        .cornerRadius(12)
+        .shadow(color: .black.opacity(0.1), radius: 3, x: 0, y: 2)
+    }
+}
+
 struct MobileNotesSceneView: View {
     @EnvironmentObject private var store: StickyNotesStore
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var selection: String?
+    @State private var editingNoteID: String?
+    @State private var noteToDelete: String?
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $selection) {
-                ForEach(store.notes) { note in
-                    NoteRowView(note: note)
-                        .tag(note.id)
-                        .swipeActions {
-                            Button("Delete", role: .destructive) {
-                                if selection == note.id {
-                                    selection = nil
-                                }
-                                store.deleteNote(id: note.id)
+        NavigationStack {
+            Group {
+                if store.notes.isEmpty {
+                    ContentUnavailableView("No Notes", systemImage: "note.text",
+                                           description: Text("Tap + to create a sticky note."))
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 12) {
+                            ForEach(store.notes) { note in
+                                StickyCardView(note: note)
+                                    .onTapGesture {
+                                        editingNoteID = note.id
+                                    }
+                                    .onLongPressGesture {
+                                        noteToDelete = note.id
+                                    }
                             }
                         }
+                        .padding(12)
+                    }
                 }
             }
             .navigationTitle("Stickies")
@@ -194,7 +243,7 @@ struct MobileNotesSceneView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         let id = store.createNote()
-                        selection = id
+                        editingNoteID = id
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -206,23 +255,24 @@ struct MobileNotesSceneView: View {
                     lastSuccessfulCloudSync: store.lastSuccessfulCloudSync
                 )
                 .font(.caption)
-                .padding()
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(.ultraThinMaterial)
             }
-        } detail: {
-            if let selection {
-                NoteEditorView(noteID: selection)
-            } else {
-                ContentUnavailableView("Select a Note", systemImage: "note.text")
-            }
-        }
-        .onAppear {
-            if selection == nil {
-                selection = store.notes.first?.id
+            .navigationDestination(item: $editingNoteID) { noteID in
+                NoteEditorView(noteID: noteID)
             }
         }
-        .onChange(of: store.notes.map(\.id)) { _, ids in
-            guard let selection, !ids.contains(selection) else { return }
-            self.selection = ids.first
+        .confirmationDialog("Delete this note?", isPresented: deleteDialogBinding, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if let noteToDelete {
+                    store.deleteNote(id: noteToDelete)
+                    self.noteToDelete = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                noteToDelete = nil
+            }
         }
         .onChange(of: scenePhase) { _, newValue in
             if newValue == .active {
@@ -238,6 +288,17 @@ struct MobileNotesSceneView: View {
         } message: {
             Text(store.lastErrorMessage ?? "")
         }
+    }
+
+    private var deleteDialogBinding: Binding<Bool> {
+        Binding(
+            get: { noteToDelete != nil },
+            set: { shouldShow in
+                if !shouldShow {
+                    noteToDelete = nil
+                }
+            }
+        )
     }
 
     private var syncErrorBinding: Binding<Bool> {
