@@ -1,6 +1,8 @@
 import CloudKit
 import Foundation
+#if os(macOS)
 import Security
+#endif
 
 struct CloudSyncConflict: Sendable {
     let localNoteID: String
@@ -32,6 +34,11 @@ enum StickyNotesCloudServiceFactory {
     }
 
     private static var hasCloudKitEntitlement: Bool {
+        #if !os(macOS)
+        // SecTask entitlement inspection is not available to Swift on iOS builds.
+        // The app target already declares CloudKit entitlements for iPhone/iPad.
+        return true
+        #else
         guard let task = SecTaskCreateFromSelf(nil) else {
             return false
         }
@@ -47,6 +54,7 @@ enum StickyNotesCloudServiceFactory {
         }
 
         return services.contains("CloudKit") || services.contains("CloudKit-Anonymous")
+        #endif
     }
 }
 
