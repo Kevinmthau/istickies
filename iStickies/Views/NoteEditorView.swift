@@ -9,9 +9,17 @@ struct NoteEditorView: View {
     @State private var hasLoadedDraft = false
 #if os(macOS)
     @State private var saveTask: Task<Void, Never>?
+#else
+    @FocusState private var isEditorFocused: Bool
 #endif
 
     let noteID: String
+    let autoFocusOnAppear: Bool
+
+    init(noteID: String, autoFocusOnAppear: Bool = false) {
+        self.noteID = noteID
+        self.autoFocusOnAppear = autoFocusOnAppear
+    }
 
     var body: some View {
         if let note = store.note(withID: noteID) {
@@ -68,16 +76,19 @@ struct NoteEditorView: View {
 
             TextEditor(text: $draftContent)
                 .font(.system(size: 16))
+                .focused($isEditorFocused)
                 .scrollContentBackground(.hidden)
                 .padding(10)
                 .background(StickyNoteColor.yellow.tint)
         }
         .onAppear {
             syncDraft(with: note, force: !hasLoadedDraft)
+            focusEditorIfNeeded()
         }
         .onChange(of: noteID) { _, _ in
             guard let latestNote = store.note(withID: noteID) else { return }
             syncDraft(with: latestNote, force: true)
+            focusEditorIfNeeded()
         }
         .onChange(of: note.content) { _, newValue in
             guard newValue != draftContent else { return }
@@ -86,6 +97,10 @@ struct NoteEditorView: View {
         }
         .onChange(of: draftContent) { _, newValue in
             persistDraftContent(newValue)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            isEditorFocused = true
         }
 #endif
     }
@@ -115,6 +130,15 @@ struct NoteEditorView: View {
         saveTask?.cancel()
         saveTask = nil
         persistDraftContent(draftContent)
+    }
+#else
+    private func focusEditorIfNeeded() {
+        guard autoFocusOnAppear else { return }
+
+        Task { @MainActor in
+            await Task.yield()
+            isEditorFocused = true
+        }
     }
 #endif
 }

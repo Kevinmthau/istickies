@@ -39,6 +39,51 @@ struct NoteRowView: View {
     }
 }
 
+struct StickyNoteCardView: View {
+    let note: StickyNote
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 8) {
+                Text(note.title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                Spacer(minLength: 0)
+
+                if note.needsCloudUpload {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Text(note.summary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 0)
+
+            Text(note.lastModified, style: .relative)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+        .background(note.color.tint)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.black.opacity(0.08), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
+    }
+}
+
 struct SyncStatusView: View {
     let state: StickyNotesSyncState
     let lastSuccessfulCloudSync: Date?
@@ -163,22 +208,46 @@ struct MobileNotesSceneView: View {
     @EnvironmentObject private var store: StickyNotesStore
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var selection: String?
+    @State private var selectedNoteID: String?
+
+    private let columns = Array(
+        repeating: GridItem(.flexible(), spacing: 16, alignment: .top),
+        count: 2
+    )
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $selection) {
-                ForEach(store.notes) { note in
-                    NoteRowView(note: note)
-                        .tag(note.id)
-                        .swipeActions {
-                            Button("Delete", role: .destructive) {
-                                if selection == note.id {
-                                    selection = nil
+        NavigationStack {
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
+
+                if store.notes.isEmpty {
+                    ContentUnavailableView("No Notes", systemImage: "note.text")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(store.notes) { note in
+                                Button {
+                                    selectedNoteID = note.id
+                                } label: {
+                                    StickyNoteCardView(note: note)
                                 }
-                                store.deleteNote(id: note.id)
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button("Delete Sticky", role: .destructive) {
+                                        if selectedNoteID == note.id {
+                                            selectedNoteID = nil
+                                        }
+                                        store.deleteNote(id: note.id)
+                                    }
+                                }
                             }
                         }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             }
             .navigationTitle("Stickies")
@@ -194,7 +263,7 @@ struct MobileNotesSceneView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         let id = store.createNote()
-                        selection = id
+                        selectedNoteID = id
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -208,21 +277,18 @@ struct MobileNotesSceneView: View {
                 .font(.caption)
                 .padding()
             }
-        } detail: {
-            if let selection {
-                NoteEditorView(noteID: selection)
-            } else {
-                ContentUnavailableView("Select a Note", systemImage: "note.text")
-            }
         }
-        .onAppear {
-            if selection == nil {
-                selection = store.notes.first?.id
+        .sheet(isPresented: selectedNoteSheetPresented) {
+            if let selectedNoteID {
+                MobileNoteSheetView(noteID: selectedNoteID)
+                    .environmentObject(store)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
             }
         }
         .onChange(of: store.notes.map(\.id)) { _, ids in
-            guard let selection, !ids.contains(selection) else { return }
-            self.selection = ids.first
+            guard let selectedNoteID, !ids.contains(selectedNoteID) else { return }
+            self.selectedNoteID = nil
         }
         .onChange(of: scenePhase) { _, newValue in
             if newValue == .active {
@@ -240,6 +306,17 @@ struct MobileNotesSceneView: View {
         }
     }
 
+    private var selectedNoteSheetPresented: Binding<Bool> {
+        Binding(
+            get: { selectedNoteID != nil },
+            set: { shouldPresent in
+                if !shouldPresent {
+                    selectedNoteID = nil
+                }
+            }
+        )
+    }
+
     private var syncErrorBinding: Binding<Bool> {
         Binding(
             get: { store.lastErrorMessage != nil },
@@ -249,6 +326,25 @@ struct MobileNotesSceneView: View {
                 }
             }
         )
+    }
+}
+
+private struct MobileNoteSheetView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let noteID: String
+
+    var body: some View {
+        NavigationStack {
+            NoteEditorView(noteID: noteID, autoFocusOnAppear: true)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            dismiss()
+                        }
+                    }
+                }
+        }
     }
 }
 #endif
