@@ -1,17 +1,17 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
 #endif
 
 struct NoteEditorView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var store: StickyNotesStore
     @State private var draftContent = ""
     @State private var hasLoadedDraft = false
-#if os(macOS)
+    @State private var hasPendingLocalChanges = false
     @State private var saveTask: Task<Void, Never>?
-#else
-    @FocusState private var isEditorFocused: Bool
-#endif
 
     let noteID: String
     let autoFocusOnAppear: Bool
@@ -48,12 +48,22 @@ struct NoteEditorView: View {
                 syncDraft(with: latestNote, force: true)
             }
             .onChange(of: note.content) { _, newValue in
-                guard newValue != draftContent else { return }
+                if newValue == draftContent {
+                    hasPendingLocalChanges = false
+                    return
+                }
+
+                guard !hasPendingLocalChanges else { return }
                 draftContent = newValue
                 hasLoadedDraft = true
             }
-            .onChange(of: draftContent) { _, newValue in
+            .onChange(of: draftContent) { _, _ in
                 scheduleDraftPersistence()
+            }
+            .onChange(of: scenePhase) { _, newValue in
+                if newValue != .active {
+                    flushDraftPersistence()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .stickyNotesWillTerminate)) { _ in
                 flushDraftPersistence()
@@ -74,33 +84,39 @@ struct NoteEditorView: View {
             .padding(.vertical, 10)
             .background(StickyNoteColor.yellow.tint.opacity(0.85))
 
-            TextEditor(text: $draftContent)
-                .font(.system(size: 16))
-                .focused($isEditorFocused)
-                .scrollContentBackground(.hidden)
-                .padding(10)
+            IOSStickyTextView(
+                text: $draftContent,
+                shouldAutoFocus: autoFocusOnAppear
+            )
                 .background(StickyNoteColor.yellow.tint)
         }
         .onAppear {
             syncDraft(with: note, force: !hasLoadedDraft)
-            focusEditorIfNeeded()
         }
         .onChange(of: noteID) { _, _ in
             guard let latestNote = store.note(withID: noteID) else { return }
             syncDraft(with: latestNote, force: true)
-            focusEditorIfNeeded()
         }
         .onChange(of: note.content) { _, newValue in
-            guard newValue != draftContent else { return }
+            if newValue == draftContent {
+                hasPendingLocalChanges = false
+                return
+            }
+
+            guard !hasPendingLocalChanges else { return }
             draftContent = newValue
             hasLoadedDraft = true
         }
-        .onChange(of: draftContent) { _, newValue in
-            persistDraftContent(newValue)
+        .onChange(of: draftContent) { _, _ in
+            scheduleDraftPersistence()
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            isEditorFocused = true
+        .onChange(of: scenePhase) { _, newValue in
+            if newValue != .active {
+                flushDraftPersistence()
+            }
+        }
+        .onDisappear {
+            flushDraftPersistence()
         }
 #endif
     }
@@ -109,15 +125,21 @@ struct NoteEditorView: View {
         guard force || !hasLoadedDraft else { return }
         draftContent = note.content
         hasLoadedDraft = true
+        hasPendingLocalChanges = false
     }
 
     private func persistDraftContent(_ content: String) {
-        guard store.note(withID: noteID)?.content != content else { return }
+        guard store.note(withID: noteID)?.content != content else {
+            hasPendingLocalChanges = false
+            return
+        }
+
         store.updateContent(id: noteID, content: content)
+        hasPendingLocalChanges = false
     }
 
-#if os(macOS)
     private func scheduleDraftPersistence() {
+        hasPendingLocalChanges = store.note(withID: noteID)?.content != draftContent
         saveTask?.cancel()
         saveTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
@@ -131,16 +153,6 @@ struct NoteEditorView: View {
         saveTask = nil
         persistDraftContent(draftContent)
     }
-#else
-    private func focusEditorIfNeeded() {
-        guard autoFocusOnAppear else { return }
-
-        Task { @MainActor in
-            await Task.yield()
-            isEditorFocused = true
-        }
-    }
-#endif
 }
 
 #if os(macOS)
@@ -210,6 +222,75 @@ private struct MacStickyTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             text = textView.string
+        }
+    }
+}
+#elseif os(iOS)
+private struct IOSStickyTextView: UIViewRepresentable {
+    @Binding var text: String
+
+    let shouldAutoFocus: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.delegate = context.coordinator
+        textView.backgroundColor = .clear
+        textView.font = .systemFont(ofSize: 16)
+        textView.textColor = .label
+        textView.text = text
+        textView.alwaysBounceVertical = true
+        textView.keyboardDismissMode = .interactive
+        textView.smartDashesType = .no
+        textView.smartQuotesType = .no
+        textView.autocapitalizationType = .sentences
+        textView.autocorrectionType = .yes
+        textView.textContainerInset = UIEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        textView.textContainer.lineFragmentPadding = 0
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        if textView.text != text {
+            let priorSelection = textView.selectedRange
+            context.coordinator.isApplyingProgrammaticUpdate = true
+            textView.text = text
+            textView.selectedRange = clampedSelection(priorSelection, utf16Count: text.utf16.count)
+            context.coordinator.isApplyingProgrammaticUpdate = false
+        }
+
+        guard shouldAutoFocus, !context.coordinator.didAutoFocus else { return }
+        DispatchQueue.main.async {
+            guard textView.window != nil else { return }
+            guard !context.coordinator.didAutoFocus else { return }
+            context.coordinator.didAutoFocus = true
+            textView.becomeFirstResponder()
+        }
+    }
+
+    private func clampedSelection(_ selection: NSRange, utf16Count: Int) -> NSRange {
+        let location = min(selection.location, utf16Count)
+        let maxLength = max(utf16Count - location, 0)
+        let length = min(selection.length, maxLength)
+        return NSRange(location: location, length: length)
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        @Binding private var text: String
+
+        var didAutoFocus = false
+        var isApplyingProgrammaticUpdate = false
+
+        init(text: Binding<String>) {
+            _text = text
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            guard !isApplyingProgrammaticUpdate else { return }
+            text = textView.text
         }
     }
 }

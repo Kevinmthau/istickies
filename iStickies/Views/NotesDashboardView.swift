@@ -208,7 +208,7 @@ struct MobileNotesSceneView: View {
     @EnvironmentObject private var store: StickyNotesStore
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var selectedNoteID: String?
+    @State private var selectedNote: MobileSelectedNote?
 
     private let columns = Array(
         repeating: GridItem(.flexible(), spacing: 16, alignment: .top),
@@ -229,15 +229,15 @@ struct MobileNotesSceneView: View {
                         LazyVGrid(columns: columns, spacing: 16) {
                             ForEach(store.notes) { note in
                                 Button {
-                                    selectedNoteID = note.id
+                                    selectedNote = MobileSelectedNote(id: note.id)
                                 } label: {
                                     StickyNoteCardView(note: note)
                                 }
                                 .buttonStyle(.plain)
                                 .contextMenu {
                                     Button("Delete Sticky", role: .destructive) {
-                                        if selectedNoteID == note.id {
-                                            selectedNoteID = nil
+                                        if selectedNote?.id == note.id {
+                                            selectedNote = nil
                                         }
                                         store.deleteNote(id: note.id)
                                     }
@@ -263,7 +263,7 @@ struct MobileNotesSceneView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         let id = store.createNote()
-                        selectedNoteID = id
+                        selectedNote = MobileSelectedNote(id: id)
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -278,17 +278,15 @@ struct MobileNotesSceneView: View {
                 .padding()
             }
         }
-        .sheet(isPresented: selectedNoteSheetPresented) {
-            if let selectedNoteID {
-                MobileNoteSheetView(noteID: selectedNoteID)
-                    .environmentObject(store)
-                    .presentationDetents([.large])
-                    .presentationDragIndicator(.visible)
-            }
+        .sheet(item: $selectedNote) { selectedNote in
+            MobileNoteSheetView(noteID: selectedNote.id)
+                .environmentObject(store)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
         .onChange(of: store.notes.map(\.id)) { _, ids in
-            guard let selectedNoteID, !ids.contains(selectedNoteID) else { return }
-            self.selectedNoteID = nil
+            guard let selectedNote, !ids.contains(selectedNote.id) else { return }
+            self.selectedNote = nil
         }
         .onChange(of: scenePhase) { _, newValue in
             if newValue == .active {
@@ -306,17 +304,6 @@ struct MobileNotesSceneView: View {
         }
     }
 
-    private var selectedNoteSheetPresented: Binding<Bool> {
-        Binding(
-            get: { selectedNoteID != nil },
-            set: { shouldPresent in
-                if !shouldPresent {
-                    selectedNoteID = nil
-                }
-            }
-        )
-    }
-
     private var syncErrorBinding: Binding<Bool> {
         Binding(
             get: { store.lastErrorMessage != nil },
@@ -327,6 +314,10 @@ struct MobileNotesSceneView: View {
             }
         )
     }
+}
+
+private struct MobileSelectedNote: Identifiable {
+    let id: String
 }
 
 private struct MobileNoteSheetView: View {
