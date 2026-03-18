@@ -7,6 +7,7 @@ import SwiftUI
 final class MacStickyNoteWindowCoordinator: ObservableObject {
     private let store: StickyNotesStore
     private var windows: [String: StickyNoteWindow] = [:]
+    private var windowOrder: [String] = []
     private var cancellables: Set<AnyCancellable> = []
     private var hasPresentedInitialNotes = false
     private var isBringingWindowsToFront = false
@@ -44,7 +45,7 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
     func showAllNotes() {
         store.openAllNotes()
         syncWindows(with: store.notes)
-        bringAllWindowsToFront(prioritizing: store.notes.first?.id)
+        bringAllWindowsToFront(prioritizing: windowOrder.last ?? store.notes.first?.id)
     }
 
     func deleteFocusedNote() {
@@ -77,12 +78,15 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
                     cascadeOffset: offset,
                     onActivate: { [weak self] noteID in
                         self?.bringAllWindowsToFront(prioritizing: noteID)
+                    },
+                    onClose: { [weak self] noteID in
+                        self?.windows.removeValue(forKey: noteID)
+                        self?.windowOrder.removeAll { $0 == noteID }
                     }
-                ) { [weak self] noteID in
-                    self?.windows.removeValue(forKey: noteID)
-                }
+                )
 
                 windows[note.id] = window
+                promoteWindow(note.id)
                 window.makeKeyAndOrderFront(nil)
             }
         }
@@ -95,7 +99,11 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
     private func bringAllWindowsToFront(prioritizing prioritizedNoteID: String?) {
         guard !isBringingWindowsToFront else { return }
 
-        let orderedWindows = store.notes.compactMap { windows[$0.id] }
+        if let prioritizedNoteID {
+            promoteWindow(prioritizedNoteID)
+        }
+
+        let orderedWindows = orderedWindowsForPresentation()
         guard !orderedWindows.isEmpty else { return }
 
         isBringingWindowsToFront = true
@@ -119,12 +127,26 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
             self?.isBringingWindowsToFront = false
         }
     }
+
+    private func promoteWindow(_ noteID: String) {
+        windowOrder.removeAll { $0 == noteID }
+        windowOrder.append(noteID)
+    }
+
+    private func orderedWindowsForPresentation() -> [StickyNoteWindow] {
+        let activeIDs = Set(windows.keys)
+        windowOrder = windowOrder.filter { activeIDs.contains($0) }
+
+        let missingIDs = store.notes.map(\.id).filter { windows[$0] != nil && !windowOrder.contains($0) }
+        windowOrder.append(contentsOf: missingIDs)
+
+        return windowOrder.compactMap { windows[$0] }
+    }
 }
 
 private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     private static let defaultContentSize = CGSize(width: 280, height: 280)
     private static let minimumContentSize = CGSize(width: 220, height: 220)
-    private static let localFramePersistenceDelay: TimeInterval = 0.15
 
     let noteID: String
 
@@ -134,13 +156,22 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     private var isPresentingDeleteConfirmation = false
     private var isClosingFromCoordinator = false
     private var isClosingForApplicationTermination = false
-    private var isApplyingModelFrame = false
-    private var isLocallyMovingWindow = false
-    private var lastLocalFrameReportDate: Date?
-    private var pendingLocalFrame: StickyNoteFrame?
-    private var localFramePersistenceTask: Task<Void, Never>?
-    private var pendingModelFrame: NSRect?
-    private var pendingModelFrameTask: Task<Void, Never>?
+    private lazy var frameController = StickyNoteWindowFrameController(
+        readCurrentFrame: { [weak self] in
+            self?.frame ?? .zero
+        },
+        applyFrame: { [weak self] frame in
+            self?.setFrame(frame, display: true, animate: false)
+        },
+        readPersistedFrame: { [weak self] in
+            guard let self else { return nil }
+            return self.store.note(withID: self.noteID)?.preferredFrame
+        },
+        persistFrame: { [weak self] frame in
+            guard let self else { return }
+            self.store.updatePreferredFrame(id: self.noteID, frame: frame)
+        }
+    )
     private var terminationObserver: NSObjectProtocol?
 
     init(
@@ -192,17 +223,16 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.flushPendingLocalFramePersistence()
-            self?.isClosingForApplicationTermination = true
+            MainActor.assumeIsolated {
+                self?.frameController.flushPendingLocalFramePersistence()
+                self?.isClosingForApplicationTermination = true
+            }
         }
 
         apply(note: note, forceFrame: true)
     }
 
     deinit {
-        localFramePersistenceTask?.cancel()
-        pendingModelFrameTask?.cancel()
-
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
         }
@@ -222,32 +252,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
             height: preferredFrame.height
         ))
 
-        guard StickyNoteWindowFrameSync.shouldApplyModelFrame(
-            currentFrame: frame,
-            targetFrame: targetFrame,
-            lastLocalFrameReportDate: lastLocalFrameReportDate,
-            isLocalMoveActive: isLocallyMovingWindow,
-            forceFrame: forceFrame
-        ) else {
-            if forceFrame || frame.distanceSquared(to: targetFrame) <= 9 {
-                clearPendingModelFrame()
-            } else if isLocallyMovingWindow {
-                holdPendingModelFrame(targetFrame)
-            } else if let delay = StickyNoteWindowFrameSync.suppressionDelay(
-                lastLocalFrameReportDate: lastLocalFrameReportDate
-            ) {
-                schedulePendingModelFrame(targetFrame, after: delay)
-            }
-            return
-        }
-
-        clearPendingModelFrame()
-        isApplyingModelFrame = true
-        defer { isApplyingModelFrame = false }
-
-        if forceFrame || frame.distanceSquared(to: targetFrame) > 9 {
-            setFrame(targetFrame, display: true, animate: false)
-        }
+        frameController.applyModelFrame(targetFrame, force: forceFrame)
     }
 
     func closeFromCoordinator() {
@@ -284,113 +289,16 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         )
     }
 
-    private func schedulePendingModelFrame(_ targetFrame: NSRect, after delay: TimeInterval) {
-        pendingModelFrame = targetFrame
-        pendingModelFrameTask?.cancel()
-        pendingModelFrameTask = Task { @MainActor [weak self] in
-            let delay = max(delay, 0)
-            if delay > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            }
-
-            guard !Task.isCancelled else { return }
-            self?.applyPendingModelFrameIfNeeded()
-        }
-    }
-
-    private func holdPendingModelFrame(_ targetFrame: NSRect) {
-        pendingModelFrame = targetFrame
-        pendingModelFrameTask?.cancel()
-        pendingModelFrameTask = nil
-    }
-
-    private func applyPendingModelFrameIfNeeded() {
-        guard let pendingModelFrame else { return }
-
-        if frame.distanceSquared(to: pendingModelFrame) <= 9 {
-            clearPendingModelFrame()
-            return
-        }
-
-        guard !isLocallyMovingWindow else { return }
-
-        if let delay = StickyNoteWindowFrameSync.suppressionDelay(
-            lastLocalFrameReportDate: lastLocalFrameReportDate
-        ) {
-            schedulePendingModelFrame(pendingModelFrame, after: delay)
-            return
-        }
-
-        clearPendingModelFrame()
-        isApplyingModelFrame = true
-        defer { isApplyingModelFrame = false }
-        setFrame(pendingModelFrame, display: true, animate: false)
-    }
-
-    private func clearPendingModelFrame() {
-        pendingModelFrame = nil
-        pendingModelFrameTask?.cancel()
-        pendingModelFrameTask = nil
-    }
-
-    private func beginLocalMoveIfNeeded() {
-        guard !isLocallyMovingWindow else { return }
-
-        isLocallyMovingWindow = true
-    }
-
-    private func completeLocalMoveIfNeeded() {
-        guard isLocallyMovingWindow else { return }
-
-        isLocallyMovingWindow = false
-
-        clearPendingModelFrame()
-        flushPendingLocalFramePersistence()
-    }
-
-    private func scheduleLocalFramePersistence(after delay: TimeInterval) {
-        localFramePersistenceTask?.cancel()
-        localFramePersistenceTask = Task { @MainActor [weak self] in
-            let delay = max(delay, 0)
-            if delay > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            }
-
-            guard !Task.isCancelled else { return }
-            self?.completeLocalMoveIfNeeded()
-        }
-    }
-
-    private func flushPendingLocalFramePersistence() {
-        localFramePersistenceTask?.cancel()
-        localFramePersistenceTask = nil
-
-        guard let pendingLocalFrame else { return }
-        self.pendingLocalFrame = nil
-
-        if store.note(withID: noteID)?.preferredFrame != pendingLocalFrame {
-            store.updatePreferredFrame(id: noteID, frame: pendingLocalFrame)
-        }
-    }
-
     func windowWillMove(_ notification: Notification) {
-        beginLocalMoveIfNeeded()
+        frameController.windowWillMove()
     }
 
     func windowDidMove(_ notification: Notification) {
-        guard !isApplyingModelFrame else { return }
-        beginLocalMoveIfNeeded()
-
-        lastLocalFrameReportDate = Date()
-        pendingLocalFrame = frame.stickyFrame
-        scheduleLocalFramePersistence(after: Self.localFramePersistenceDelay)
+        frameController.windowDidMove()
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        guard !isApplyingModelFrame else { return }
-        lastLocalFrameReportDate = Date()
-        pendingLocalFrame = frame.stickyFrame
-        flushPendingLocalFramePersistence()
+        frameController.windowDidEndLiveResize()
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -408,76 +316,11 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        localFramePersistenceTask?.cancel()
-        pendingLocalFrame = nil
+        frameController.reset()
         onClose(noteID)
         isClosingFromCoordinator = false
         isPresentingDeleteConfirmation = false
         isClosingForApplicationTermination = false
-        isLocallyMovingWindow = false
-    }
-}
-
-enum StickyNoteWindowFrameSync {
-    static let staleLocalFrameSuppressionInterval: TimeInterval = 0.5
-
-    static func shouldApplyModelFrame(
-        currentFrame: NSRect,
-        targetFrame: NSRect,
-        lastLocalFrameReportDate: Date?,
-        isLocalMoveActive: Bool = false,
-        forceFrame: Bool,
-        now: Date = Date()
-    ) -> Bool {
-        if forceFrame {
-            return true
-        }
-
-        guard currentFrame.distanceSquared(to: targetFrame) > 9 else {
-            return false
-        }
-
-        guard !isLocalMoveActive else {
-            return false
-        }
-
-        return suppressionDelay(lastLocalFrameReportDate: lastLocalFrameReportDate, now: now) == nil
-    }
-
-    static func suppressionDelay(
-        lastLocalFrameReportDate: Date?,
-        now: Date = Date()
-    ) -> TimeInterval? {
-        guard let lastLocalFrameReportDate else {
-            return nil
-        }
-
-        let elapsed = now.timeIntervalSince(lastLocalFrameReportDate)
-        guard elapsed >= 0, elapsed < staleLocalFrameSuppressionInterval else {
-            return nil
-        }
-
-        return staleLocalFrameSuppressionInterval - elapsed
-    }
-}
-
-private extension NSRect {
-    var stickyFrame: StickyNoteFrame {
-        StickyNoteFrame(
-            x: origin.x,
-            y: origin.y,
-            width: size.width,
-            height: size.height
-        )
-    }
-
-    func distanceSquared(to other: NSRect) -> CGFloat {
-        let deltaX = origin.x - other.origin.x
-        let deltaY = origin.y - other.origin.y
-        let deltaWidth = size.width - other.size.width
-        let deltaHeight = size.height - other.size.height
-
-        return deltaX * deltaX + deltaY * deltaY + deltaWidth * deltaWidth + deltaHeight * deltaHeight
     }
 }
 #endif

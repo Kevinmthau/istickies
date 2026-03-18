@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 
+private let stickyNotesDefaultCloudSyncDelay: TimeInterval = 0.75
+
 enum StickyNotesSyncState: Equatable {
     case idle
     case syncing
@@ -9,6 +11,11 @@ enum StickyNotesSyncState: Equatable {
 
 @MainActor
 final class StickyNotesStore: ObservableObject {
+    private struct CommitOptions {
+        var resortNotes = false
+        var syncDelay: TimeInterval?
+    }
+
     @Published private(set) var notes: [StickyNote] = []
     @Published private(set) var syncState: StickyNotesSyncState = .idle
     @Published private(set) var lastSuccessfulCloudSync: Date?
@@ -71,54 +78,76 @@ final class StickyNotesStore: ObservableObject {
     @discardableResult
     func createNote() -> String {
         let note = StickyNote(color: nextColor())
-        notes = sortNotes(notes + [note])
-        persistSnapshot()
-        scheduleCloudSync()
+        commitStateChange(
+            CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+        ) {
+            notes.append(note)
+            return true
+        }
         return note.id
     }
 
     func updateContent(id: String, content: String) {
-        mutateNote(id: id, touchModifiedAt: true) { note in
+        mutateNote(
+            id: id,
+            touchModifiedAt: true,
+            commitOptions: CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+        ) { note in
             note.content = content
         }
     }
 
     func updateColor(id: String, color: StickyNoteColor) {
-        mutateNote(id: id, touchModifiedAt: true) { note in
+        mutateNote(
+            id: id,
+            touchModifiedAt: true,
+            commitOptions: CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+        ) { note in
             note.color = color
         }
     }
 
     func updatePreferredFrame(id: String, frame: StickyNoteFrame) {
-        mutateNote(id: id, touchModifiedAt: false) { note in
+        mutateNote(
+            id: id,
+            touchModifiedAt: false,
+            commitOptions: CommitOptions(syncDelay: stickyNotesDefaultCloudSyncDelay)
+        ) { note in
             note.preferredFrame = frame
         }
     }
 
     func openNote(id: String) {
-        mutateNote(id: id, touchModifiedAt: false) { note in
+        mutateNote(
+            id: id,
+            touchModifiedAt: false,
+            commitOptions: CommitOptions(syncDelay: stickyNotesDefaultCloudSyncDelay)
+        ) { note in
             note.isOpen = true
         }
     }
 
     func openAllNotes() {
-        var changed = false
-        notes = sortNotes(notes.map { note in
-            guard !note.isOpen else { return note }
-            changed = true
-            var copy = note
-            copy.isOpen = true
-            copy.needsCloudUpload = true
-            return copy
-        })
-
-        guard changed else { return }
-        persistSnapshot()
-        scheduleCloudSync()
+        commitStateChange(CommitOptions(syncDelay: stickyNotesDefaultCloudSyncDelay)) {
+            var changed = false
+            notes = notes.map { note in
+                guard !note.isOpen else { return note }
+                changed = true
+                var copy = note
+                copy.isOpen = true
+                copy.needsCloudUpload = true
+                return copy
+            }
+            return changed
+        }
     }
 
     func closeNote(id: String, frame: StickyNoteFrame?) {
-        mutateNote(id: id, touchModifiedAt: false) { note in
+        mutateNote(
+            id: id,
+            touchModifiedAt: false,
+            commitOptions: CommitOptions(syncDelay: stickyNotesDefaultCloudSyncDelay)
+        ) { note in
             note.isOpen = false
             if let frame {
                 note.preferredFrame = frame
@@ -127,12 +156,13 @@ final class StickyNotesStore: ObservableObject {
     }
 
     func deleteNote(id: String) {
-        guard notes.contains(where: { $0.id == id }) else { return }
+        commitStateChange(CommitOptions(syncDelay: 0.2)) {
+            guard notes.contains(where: { $0.id == id }) else { return false }
 
-        notes.removeAll { $0.id == id }
-        pendingDeletionIDs.insert(id)
-        persistSnapshot()
-        scheduleCloudSync(after: 0.2)
+            notes.removeAll { $0.id == id }
+            pendingDeletionIDs.insert(id)
+            return true
+        }
     }
 
     func syncNow() async {
@@ -143,12 +173,26 @@ final class StickyNotesStore: ObservableObject {
 
         do {
             let remoteNotes = try await cloudService.fetchAllNotes()
-            merge(remoteNotes: remoteNotes)
+            let mergeOutcome = StickyNotesMergeEngine.merge(
+                localNotes: notes,
+                remoteNotes: remoteNotes,
+                pendingDeletionIDs: pendingDeletionIDs
+            )
+            if mergeOutcome.notes != notes {
+                notes = sortNotes(mergeOutcome.notes)
+                persistSnapshot()
+            }
             let syncResult = await cloudService.syncChanges(
                 saves: notes.filter(\.needsCloudUpload),
                 deletions: Array(pendingDeletionIDs)
             )
-            apply(syncResult)
+            let syncOutcome = StickyNotesMergeEngine.apply(
+                syncResult: syncResult,
+                to: notes,
+                pendingDeletionIDs: pendingDeletionIDs
+            )
+            notes = sortNotes(syncOutcome.notes)
+            pendingDeletionIDs = syncOutcome.pendingDeletionIDs
 
             if let failureMessage = syncResult.failureMessage {
                 throw StickyNotesCloudSyncError(message: failureMessage)
@@ -160,7 +204,7 @@ final class StickyNotesStore: ObservableObject {
             syncState = .idle
             persistSnapshot()
 
-            if notes.contains(where: \.needsCloudUpload) || !pendingDeletionIDs.isEmpty {
+            if hasPendingCloudChanges {
                 scheduleCloudSync(after: 1.0)
             }
         } catch {
@@ -169,7 +213,7 @@ final class StickyNotesStore: ObservableObject {
             lastErrorMessage = "Cloud sync failed: \(error.localizedDescription)"
             persistSnapshot()
 
-            if notes.contains(where: \.needsCloudUpload) || !pendingDeletionIDs.isEmpty {
+            if hasPendingCloudChanges {
                 scheduleCloudSync(after: 5.0)
             }
         }
@@ -180,6 +224,7 @@ final class StickyNotesStore: ObservableObject {
     private func mutateNote(
         id: String,
         touchModifiedAt: Bool,
+        commitOptions: CommitOptions,
         mutation: (inout StickyNote) -> Void
     ) {
         guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
@@ -194,104 +239,14 @@ final class StickyNotesStore: ObservableObject {
 
         guard updated != original else { return }
 
-        notes[index] = updated
-        notes = sortNotes(notes)
-        persistSnapshot()
-        scheduleCloudSync()
-    }
-
-    private func merge(remoteNotes: [StickyNote]) {
-        var unmatchedLocal = Dictionary(uniqueKeysWithValues: notes.map { ($0.id, $0) })
-        var mergedNotes: [StickyNote] = []
-
-        for remoteNote in remoteNotes {
-            guard !pendingDeletionIDs.contains(remoteNote.id) else {
-                unmatchedLocal.removeValue(forKey: remoteNote.id)
-                continue
-            }
-
-            guard let localNote = unmatchedLocal.removeValue(forKey: remoteNote.id) else {
-                mergedNotes.append(remoteNote.markedClean())
-                continue
-            }
-
-            if localNote.needsCloudUpload && remoteNote.lastModified > localNote.lastModified
-                && remoteNote.content != localNote.content
-            {
-                mergedNotes.append(remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote))
-                mergedNotes.append(makeConflictCopy(from: localNote))
-                continue
-            }
-
-            if localNote.needsCloudUpload {
-                mergedNotes.append(localNote)
-            } else if remoteNote.lastModified >= localNote.lastModified || remoteNote.content != localNote.content {
-                mergedNotes.append(remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote))
-            } else {
-                mergedNotes.append(localNote)
-            }
-        }
-
-        for remainingLocalNote in unmatchedLocal.values {
-            if remainingLocalNote.needsCloudUpload {
-                mergedNotes.append(remainingLocalNote)
-            }
-        }
-
-        notes = sortNotes(mergedNotes)
-        persistSnapshot()
-    }
-
-    private func apply(_ syncResult: CloudSyncBatchResult) {
-        for deletedID in syncResult.deletedNoteIDs {
-            pendingDeletionIDs.remove(deletedID)
-        }
-
-        for savedNote in syncResult.savedNotes {
-            replaceLocalNote(savedNote.markedClean())
-        }
-
-        for pendingNote in syncResult.pendingNotesRequiringRetry {
-            replaceLocalNote(pendingNote)
-        }
-
-        for conflict in syncResult.conflicts {
-            guard let local = note(withID: conflict.localNoteID) else { continue }
-            resolveConflict(local: local, remote: conflict.remoteNote)
+        commitStateChange(commitOptions) {
+            notes[index] = updated
+            return true
         }
     }
 
-    private func resolveConflict(local: StickyNote, remote: StickyNote) {
-        replaceLocalNote(remoteReplacement(from: remote, preservingWindowStateFrom: local))
-        notes = sortNotes(notes + [makeConflictCopy(from: local)])
-        persistSnapshot()
-    }
-
-    private func replaceLocalNote(_ note: StickyNote) {
-        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
-        notes[index] = note
-        notes = sortNotes(notes)
-    }
-
-    private func remoteReplacement(from remote: StickyNote, preservingWindowStateFrom local: StickyNote) -> StickyNote {
-        var merged = remote.markedClean()
-        merged.isOpen = local.isOpen
-        merged.preferredFrame = local.preferredFrame ?? remote.preferredFrame
-        return merged
-    }
-
-    private func makeConflictCopy(from note: StickyNote) -> StickyNote {
-        StickyNote(
-            content: note.content,
-            titleOverride: "Conflict Copy",
-            color: note.color,
-            createdAt: note.createdAt,
-            lastModified: note.lastModified,
-            isOpen: true,
-            preferredFrame: note.preferredFrame,
-            needsCloudUpload: true,
-            cloudKitSystemFieldsData: nil
-        )
+    private var hasPendingCloudChanges: Bool {
+        notes.contains(where: \.needsCloudUpload) || !pendingDeletionIDs.isEmpty
     }
 
     private func requeueLoadedNotesIfNeeded(
@@ -319,6 +274,23 @@ final class StickyNotesStore: ObservableObject {
             }
 
             return $0.createdAt > $1.createdAt
+        }
+    }
+
+    private func commitStateChange(
+        _ options: CommitOptions = CommitOptions(),
+        mutation: () -> Bool
+    ) {
+        guard mutation() else { return }
+
+        if options.resortNotes {
+            notes = sortNotes(notes)
+        }
+
+        persistSnapshot()
+
+        if let delay = options.syncDelay {
+            scheduleCloudSync(after: delay)
         }
     }
 
@@ -359,7 +331,7 @@ final class StickyNotesStore: ObservableObject {
         }
     }
 
-    private func scheduleCloudSync(after delay: TimeInterval = 0.75) {
+    private func scheduleCloudSync(after delay: TimeInterval = stickyNotesDefaultCloudSyncDelay) {
         scheduledSyncTask?.cancel()
         scheduledSyncTask = Task { [weak self] in
             let nanoseconds = UInt64(delay * 1_000_000_000)

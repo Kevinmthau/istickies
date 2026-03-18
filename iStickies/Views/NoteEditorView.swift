@@ -8,10 +8,7 @@ import UIKit
 struct NoteEditorView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var store: StickyNotesStore
-    @State private var draftContent = ""
-    @State private var hasLoadedDraft = false
-    @State private var hasPendingLocalChanges = false
-    @State private var saveTask: Task<Void, Never>?
+    @StateObject private var draftSession = NoteDraftSession()
 
     let noteID: String
     let autoFocusOnAppear: Bool
@@ -23,7 +20,7 @@ struct NoteEditorView: View {
 
     var body: some View {
         if let note = store.note(withID: noteID) {
-            editor(for: note)
+            configuredEditor(for: note)
             .background(StickyNoteColor.yellow.tint)
 #if os(iOS)
             .navigationTitle(note.title)
@@ -37,40 +34,9 @@ struct NoteEditorView: View {
     @ViewBuilder
     private func editor(for note: StickyNote) -> some View {
 #if os(macOS)
-        MacStickyTextView(text: $draftContent)
+        MacStickyTextView(text: draftContentBinding)
             .padding(14)
             .background(StickyNoteColor.yellow.tint)
-            .onAppear {
-                syncDraft(with: note, force: !hasLoadedDraft)
-            }
-            .onChange(of: noteID) { _, _ in
-                guard let latestNote = store.note(withID: noteID) else { return }
-                syncDraft(with: latestNote, force: true)
-            }
-            .onChange(of: note.content) { _, newValue in
-                if newValue == draftContent {
-                    hasPendingLocalChanges = false
-                    return
-                }
-
-                guard !hasPendingLocalChanges else { return }
-                draftContent = newValue
-                hasLoadedDraft = true
-            }
-            .onChange(of: draftContent) { _, _ in
-                scheduleDraftPersistence()
-            }
-            .onChange(of: scenePhase) { _, newValue in
-                if newValue != .active {
-                    flushDraftPersistence()
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .stickyNotesWillTerminate)) { _ in
-                flushDraftPersistence()
-            }
-            .onDisappear {
-                flushDraftPersistence()
-            }
 #else
         VStack(spacing: 0) {
             HStack {
@@ -85,73 +51,64 @@ struct NoteEditorView: View {
             .background(StickyNoteColor.yellow.tint.opacity(0.85))
 
             IOSStickyTextView(
-                text: $draftContent,
+                text: draftContentBinding,
                 shouldAutoFocus: autoFocusOnAppear
             )
                 .background(StickyNoteColor.yellow.tint)
         }
-        .onAppear {
-            syncDraft(with: note, force: !hasLoadedDraft)
-        }
-        .onChange(of: noteID) { _, _ in
-            guard let latestNote = store.note(withID: noteID) else { return }
-            syncDraft(with: latestNote, force: true)
-        }
-        .onChange(of: note.content) { _, newValue in
-            if newValue == draftContent {
-                hasPendingLocalChanges = false
-                return
-            }
-
-            guard !hasPendingLocalChanges else { return }
-            draftContent = newValue
-            hasLoadedDraft = true
-        }
-        .onChange(of: draftContent) { _, _ in
-            scheduleDraftPersistence()
-        }
-        .onChange(of: scenePhase) { _, newValue in
-            if newValue != .active {
-                flushDraftPersistence()
-            }
-        }
-        .onDisappear {
-            flushDraftPersistence()
-        }
 #endif
     }
 
-    private func syncDraft(with note: StickyNote, force: Bool) {
-        guard force || !hasLoadedDraft else { return }
-        draftContent = note.content
-        hasLoadedDraft = true
-        hasPendingLocalChanges = false
+    @ViewBuilder
+    private func configuredEditor(for note: StickyNote) -> some View {
+        editor(for: note)
+            .onAppear {
+                configureDraftSession(with: note)
+            }
+            .onChange(of: noteID) { _, _ in
+                guard let latestNote = store.note(withID: noteID) else { return }
+                configureDraftSession(with: latestNote, force: true)
+            }
+            .onChange(of: note.content) { _, newValue in
+                draftSession.handlePersistedContentChange(newValue)
+            }
+            .onChange(of: scenePhase) { _, newValue in
+                if newValue != .active {
+                    draftSession.flush()
+                }
+            }
+#if os(macOS)
+            .onReceive(NotificationCenter.default.publisher(for: .stickyNotesWillTerminate)) { _ in
+                draftSession.flush()
+            }
+#endif
+            .onDisappear {
+                draftSession.flush()
+            }
     }
 
-    private func persistDraftContent(_ content: String) {
-        guard store.note(withID: noteID)?.content != content else {
-            hasPendingLocalChanges = false
-            return
-        }
-
-        store.updateContent(id: noteID, content: content)
-        hasPendingLocalChanges = false
+    private var draftContentBinding: Binding<String> {
+        Binding(
+            get: { draftSession.draftContent },
+            set: { draftSession.updateDraftContent($0) }
+        )
     }
 
-    private func scheduleDraftPersistence() {
-        hasPendingLocalChanges = store.note(withID: noteID)?.content != draftContent
-        saveTask?.cancel()
-        saveTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            persistDraftContent(draftContent)
-        }
-    }
+    private func configureDraftSession(with note: StickyNote, force: Bool = false) {
+        let store = self.store
+        let currentNoteID = noteID
 
-    private func flushDraftPersistence() {
-        saveTask?.cancel()
-        saveTask = nil
-        persistDraftContent(draftContent)
+        draftSession.configure(
+            noteID: currentNoteID,
+            initialContent: note.content,
+            force: force,
+            readPersistedContent: {
+                store.note(withID: currentNoteID)?.content
+            },
+            persistDraftContent: { content in
+                store.updateContent(id: currentNoteID, content: content)
+            }
+        )
     }
 }
 

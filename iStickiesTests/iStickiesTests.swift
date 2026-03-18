@@ -64,6 +64,52 @@ struct iStickiesTests {
         #expect(store.note(withID: noteID)?.needsCloudUpload == false)
     }
 
+    @Test func draftSessionPersistsLatestContentAfterDebounce() async throws {
+        var persistedContent = "Original"
+        let session = NoteDraftSession()
+
+        session.configure(
+            noteID: "note",
+            initialContent: persistedContent,
+            readPersistedContent: { persistedContent },
+            persistDraftContent: { persistedContent = $0 }
+        )
+
+        session.updateDraftContent("First draft")
+        session.updateDraftContent("Final draft")
+
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(persistedContent == "Final draft")
+    }
+
+    @Test func switchingDraftSessionNotesFlushesPreviousDraft() {
+        var persistedContentByID = [
+            "first": "First note",
+            "second": "Second note",
+        ]
+        let session = NoteDraftSession()
+
+        session.configure(
+            noteID: "first",
+            initialContent: persistedContentByID["first"] ?? "",
+            readPersistedContent: { persistedContentByID["first"] },
+            persistDraftContent: { persistedContentByID["first"] = $0 }
+        )
+        session.updateDraftContent("Edited first note")
+
+        session.configure(
+            noteID: "second",
+            initialContent: persistedContentByID["second"] ?? "",
+            force: true,
+            readPersistedContent: { persistedContentByID["second"] },
+            persistDraftContent: { persistedContentByID["second"] = $0 }
+        )
+
+        #expect(persistedContentByID["first"] == "Edited first note")
+        #expect(session.draftContent == "Second note")
+    }
+
     @Test func flushPendingPersistenceKeepsAllCreatedNotesAcrossReload() async throws {
         let fileURL = temporaryStoreURL()
         let fileStore = StickyNotesFileStore(fileURL: fileURL)
@@ -169,6 +215,46 @@ struct iStickiesTests {
             note.id != sharedID && note.title == "Conflict Copy" && note.content == "Local draft"
         })
         #expect(hasConflictCopy)
+    }
+
+    @Test func mergeEnginePreservesWindowStateWhenRemoteVersionWins() {
+        let localFrame = StickyNoteFrame(x: 80, y: 120, width: 320, height: 280)
+        let localNote = StickyNote(
+            id: "shared-note",
+            content: "Local",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: localFrame,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: nil
+        )
+        let remoteNote = StickyNote(
+            id: "shared-note",
+            content: "Remote",
+            color: .blue,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 40),
+            isOpen: false,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: nil
+        )
+
+        let outcome = StickyNotesMergeEngine.merge(
+            localNotes: [localNote],
+            remoteNotes: [remoteNote],
+            pendingDeletionIDs: []
+        )
+        let mergedNote = try! #require(outcome.notes.first)
+
+        #expect(outcome.notes.count == 1)
+        #expect(mergedNote.content == "Remote")
+        #expect(mergedNote.color == .blue)
+        #expect(mergedNote.isOpen)
+        #expect(mergedNote.preferredFrame == localFrame)
+        #expect(mergedNote.needsCloudUpload == false)
     }
 
 #if os(macOS)
