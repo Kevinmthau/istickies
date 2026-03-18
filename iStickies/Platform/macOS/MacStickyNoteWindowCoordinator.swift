@@ -124,6 +124,7 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
 private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     private static let defaultContentSize = CGSize(width: 280, height: 280)
     private static let minimumContentSize = CGSize(width: 220, height: 220)
+    private static let localFramePersistenceDelay: TimeInterval = 0.15
 
     let noteID: String
 
@@ -134,7 +135,10 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     private var isClosingFromCoordinator = false
     private var isClosingForApplicationTermination = false
     private var isApplyingModelFrame = false
+    private var isLocallyMovingWindow = false
     private var lastLocalFrameReportDate: Date?
+    private var pendingLocalFrame: StickyNoteFrame?
+    private var localFramePersistenceTask: Task<Void, Never>?
     private var pendingModelFrame: NSRect?
     private var pendingModelFrameTask: Task<Void, Never>?
     private var terminationObserver: NSObjectProtocol?
@@ -188,6 +192,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            self?.flushPendingLocalFramePersistence()
             self?.isClosingForApplicationTermination = true
         }
 
@@ -195,6 +200,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     }
 
     deinit {
+        localFramePersistenceTask?.cancel()
         pendingModelFrameTask?.cancel()
 
         if let terminationObserver {
@@ -220,10 +226,13 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
             currentFrame: frame,
             targetFrame: targetFrame,
             lastLocalFrameReportDate: lastLocalFrameReportDate,
+            isLocalMoveActive: isLocallyMovingWindow,
             forceFrame: forceFrame
         ) else {
             if forceFrame || frame.distanceSquared(to: targetFrame) <= 9 {
                 clearPendingModelFrame()
+            } else if isLocallyMovingWindow {
+                holdPendingModelFrame(targetFrame)
             } else if let delay = StickyNoteWindowFrameSync.suppressionDelay(
                 lastLocalFrameReportDate: lastLocalFrameReportDate
             ) {
@@ -289,6 +298,12 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         }
     }
 
+    private func holdPendingModelFrame(_ targetFrame: NSRect) {
+        pendingModelFrame = targetFrame
+        pendingModelFrameTask?.cancel()
+        pendingModelFrameTask = nil
+    }
+
     private func applyPendingModelFrameIfNeeded() {
         guard let pendingModelFrame else { return }
 
@@ -296,6 +311,8 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
             clearPendingModelFrame()
             return
         }
+
+        guard !isLocallyMovingWindow else { return }
 
         if let delay = StickyNoteWindowFrameSync.suppressionDelay(
             lastLocalFrameReportDate: lastLocalFrameReportDate
@@ -316,16 +333,64 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         pendingModelFrameTask = nil
     }
 
+    private func beginLocalMoveIfNeeded() {
+        guard !isLocallyMovingWindow else { return }
+
+        isLocallyMovingWindow = true
+    }
+
+    private func completeLocalMoveIfNeeded() {
+        guard isLocallyMovingWindow else { return }
+
+        isLocallyMovingWindow = false
+
+        clearPendingModelFrame()
+        flushPendingLocalFramePersistence()
+    }
+
+    private func scheduleLocalFramePersistence(after delay: TimeInterval) {
+        localFramePersistenceTask?.cancel()
+        localFramePersistenceTask = Task { @MainActor [weak self] in
+            let delay = max(delay, 0)
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+
+            guard !Task.isCancelled else { return }
+            self?.completeLocalMoveIfNeeded()
+        }
+    }
+
+    private func flushPendingLocalFramePersistence() {
+        localFramePersistenceTask?.cancel()
+        localFramePersistenceTask = nil
+
+        guard let pendingLocalFrame else { return }
+        self.pendingLocalFrame = nil
+
+        if store.note(withID: noteID)?.preferredFrame != pendingLocalFrame {
+            store.updatePreferredFrame(id: noteID, frame: pendingLocalFrame)
+        }
+    }
+
+    func windowWillMove(_ notification: Notification) {
+        beginLocalMoveIfNeeded()
+    }
+
     func windowDidMove(_ notification: Notification) {
         guard !isApplyingModelFrame else { return }
+        beginLocalMoveIfNeeded()
+
         lastLocalFrameReportDate = Date()
-        store.updatePreferredFrame(id: noteID, frame: frame.stickyFrame)
+        pendingLocalFrame = frame.stickyFrame
+        scheduleLocalFramePersistence(after: Self.localFramePersistenceDelay)
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
         guard !isApplyingModelFrame else { return }
         lastLocalFrameReportDate = Date()
-        store.updatePreferredFrame(id: noteID, frame: frame.stickyFrame)
+        pendingLocalFrame = frame.stickyFrame
+        flushPendingLocalFramePersistence()
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -343,10 +408,13 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        localFramePersistenceTask?.cancel()
+        pendingLocalFrame = nil
         onClose(noteID)
         isClosingFromCoordinator = false
         isPresentingDeleteConfirmation = false
         isClosingForApplicationTermination = false
+        isLocallyMovingWindow = false
     }
 }
 
@@ -357,6 +425,7 @@ enum StickyNoteWindowFrameSync {
         currentFrame: NSRect,
         targetFrame: NSRect,
         lastLocalFrameReportDate: Date?,
+        isLocalMoveActive: Bool = false,
         forceFrame: Bool,
         now: Date = Date()
     ) -> Bool {
@@ -365,6 +434,10 @@ enum StickyNoteWindowFrameSync {
         }
 
         guard currentFrame.distanceSquared(to: targetFrame) > 9 else {
+            return false
+        }
+
+        guard !isLocalMoveActive else {
             return false
         }
 

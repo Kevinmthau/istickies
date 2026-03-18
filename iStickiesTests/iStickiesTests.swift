@@ -198,6 +198,21 @@ struct iStickiesTests {
         #expect(shouldApply == false)
     }
 
+    @Test func activeLocalMoveKeepsCompetingModelFrameDeferred() {
+        let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
+        let now = Date()
+        let shouldApply = StickyNoteWindowFrameSync.shouldApplyModelFrame(
+            currentFrame: currentFrame,
+            targetFrame: NSRect(x: 520, y: 360, width: 280, height: 280),
+            lastLocalFrameReportDate: now.addingTimeInterval(-2),
+            isLocalMoveActive: true,
+            forceFrame: false,
+            now: now
+        )
+
+        #expect(shouldApply == false)
+    }
+
     @Test func oldLocalFrameCanBeAppliedAgainLater() {
         let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
         let now = Date()
