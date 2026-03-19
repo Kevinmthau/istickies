@@ -5,6 +5,28 @@ import AppKit
 import UIKit
 #endif
 
+#if os(macOS)
+enum MacStickyTextViewSync {
+    static func shouldApplyProgrammaticUpdate(
+        currentText: String,
+        incomingText: String,
+        isFirstResponder: Bool,
+        hasMarkedText: Bool
+    ) -> Bool {
+        guard currentText != incomingText else { return false }
+        guard !isFirstResponder, !hasMarkedText else { return false }
+        return true
+    }
+
+    static func clampedSelection(_ selection: NSRange, utf16Count: Int) -> NSRange {
+        let location = min(selection.location, utf16Count)
+        let maxLength = max(utf16Count - location, 0)
+        let length = min(selection.length, maxLength)
+        return NSRange(location: location, length: length)
+    }
+}
+#endif
+
 struct NoteEditorView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var store: StickyNotesStore
@@ -162,15 +184,31 @@ private struct MacStickyTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
 
-        if textView.string != text {
-            let selectedRange = textView.selectedRange()
-            textView.string = text
-            textView.setSelectedRange(selectedRange)
+        guard textView.string != text else {
+            context.coordinator.pendingProgrammaticText = nil
+            return
         }
+
+        let isFirstResponder = textView.window?.firstResponder === textView
+        let hasMarkedText = textView.hasMarkedText()
+        guard MacStickyTextViewSync.shouldApplyProgrammaticUpdate(
+            currentText: textView.string,
+            incomingText: text,
+            isFirstResponder: isFirstResponder,
+            hasMarkedText: hasMarkedText
+        ) else {
+            context.coordinator.pendingProgrammaticText = text
+            return
+        }
+
+        context.coordinator.applyProgrammaticText(text, to: textView)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         @Binding private var text: String
+
+        var isApplyingProgrammaticUpdate = false
+        var pendingProgrammaticText: String?
 
         init(text: Binding<String>) {
             _text = text
@@ -178,7 +216,43 @@ private struct MacStickyTextView: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            guard !isApplyingProgrammaticUpdate else { return }
+            if pendingProgrammaticText == textView.string {
+                pendingProgrammaticText = nil
+            }
             text = textView.string
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            applyPendingProgrammaticTextIfNeeded(to: textView)
+        }
+
+        func applyProgrammaticText(_ newText: String, to textView: NSTextView) {
+            let selectedRange = textView.selectedRange()
+            isApplyingProgrammaticUpdate = true
+            textView.string = newText
+            textView.setSelectedRange(
+                MacStickyTextViewSync.clampedSelection(
+                    selectedRange,
+                    utf16Count: newText.utf16.count
+                )
+            )
+            isApplyingProgrammaticUpdate = false
+            pendingProgrammaticText = nil
+        }
+
+        private func applyPendingProgrammaticTextIfNeeded(to textView: NSTextView) {
+            guard let pendingProgrammaticText else { return }
+            guard textView.window?.firstResponder !== textView else { return }
+            guard !textView.hasMarkedText() else { return }
+
+            if textView.string == pendingProgrammaticText {
+                self.pendingProgrammaticText = nil
+                return
+            }
+
+            applyProgrammaticText(pendingProgrammaticText, to: textView)
         }
     }
 }

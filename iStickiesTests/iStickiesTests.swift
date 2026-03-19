@@ -258,6 +258,38 @@ struct iStickiesTests {
     }
 
 #if os(macOS)
+    @Test func macTextSyncDefersProgrammaticUpdatesWhileEditorIsActive() {
+        let shouldApply = MacStickyTextViewSync.shouldApplyProgrammaticUpdate(
+            currentText: "Local draft",
+            incomingText: "Remote edit",
+            isFirstResponder: true,
+            hasMarkedText: false
+        )
+
+        #expect(shouldApply == false)
+    }
+
+    @Test func macTextSyncDefersProgrammaticUpdatesWhileMarkedTextExists() {
+        let shouldApply = MacStickyTextViewSync.shouldApplyProgrammaticUpdate(
+            currentText: "Local draft",
+            incomingText: "Remote edit",
+            isFirstResponder: false,
+            hasMarkedText: true
+        )
+
+        #expect(shouldApply == false)
+    }
+
+    @Test func macTextSyncClampsSelectionToUpdatedContentLength() {
+        let clampedSelection = MacStickyTextViewSync.clampedSelection(
+            NSRange(location: 12, length: 4),
+            utf16Count: 5
+        )
+
+        #expect(clampedSelection.location == 5)
+        #expect(clampedSelection.length == 0)
+    }
+
     @Test func recentLocalFrameDoesNotGetReappliedToDraggingWindow() {
         let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
         let shouldApply = StickyNoteWindowFrameSync.shouldApplyModelFrame(
