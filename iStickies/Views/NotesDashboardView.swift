@@ -258,16 +258,6 @@ struct MobileNotesSceneView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                SyncStatusView(
-                    state: store.syncState,
-                    lastSuccessfulCloudSync: store.lastSuccessfulCloudSync
-                )
-                .font(.caption)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(.ultraThinMaterial)
-            }
             .navigationDestination(item: $editingNoteID) { noteID in
                 NoteEditorView(noteID: noteID, autoFocusOnAppear: true)
             }
