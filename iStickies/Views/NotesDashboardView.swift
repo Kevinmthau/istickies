@@ -98,10 +98,37 @@ struct SyncStatusView: View {
     }
 }
 
+private struct StickyNotesSyncModifier: ViewModifier {
+    @ObservedObject var store: StickyNotesStore
+    @Environment(\.scenePhase) private var scenePhase
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: scenePhase) { _, newValue in
+                if newValue == .active {
+                    Task { await store.syncNow() }
+                } else if newValue == .background {
+                    Task { await store.flushPendingPersistence() }
+                }
+            }
+            .alert("Sync Error", isPresented: syncErrorBinding) {
+                Button("OK") { store.lastErrorMessage = nil }
+            } message: {
+                Text(store.lastErrorMessage ?? "")
+            }
+    }
+
+    private var syncErrorBinding: Binding<Bool> {
+        Binding(
+            get: { store.lastErrorMessage != nil },
+            set: { if !$0 { store.lastErrorMessage = nil } }
+        )
+    }
+}
+
 #if os(macOS)
 struct MacNotesDashboardView: View {
     @EnvironmentObject private var store: StickyNotesStore
-    @Environment(\.scenePhase) private var scenePhase
 
     let windowCoordinator: MacStickyNoteWindowCoordinator
 
@@ -166,37 +193,12 @@ struct MacNotesDashboardView: View {
             }
         }
         .frame(minWidth: 420, minHeight: 460)
-        .onChange(of: scenePhase) { _, newValue in
-            if newValue == .active {
-                Task { await store.syncNow() }
-            } else if newValue == .background {
-                Task { await store.flushPendingPersistence() }
-            }
-        }
-        .alert("Sync Error", isPresented: syncErrorBinding) {
-            Button("OK") {
-                store.lastErrorMessage = nil
-            }
-        } message: {
-            Text(store.lastErrorMessage ?? "")
-        }
-    }
-
-    private var syncErrorBinding: Binding<Bool> {
-        Binding(
-            get: { store.lastErrorMessage != nil },
-            set: { shouldShow in
-                if !shouldShow {
-                    store.lastErrorMessage = nil
-                }
-            }
-        )
+        .modifier(StickyNotesSyncModifier(store: store))
     }
 }
 #else
 struct MobileNotesSceneView: View {
     @EnvironmentObject private var store: StickyNotesStore
-    @Environment(\.scenePhase) private var scenePhase
 
     @State private var editingNoteID: String?
     @State private var noteToDelete: String?
@@ -281,20 +283,7 @@ struct MobileNotesSceneView: View {
                 self.noteToDelete = nil
             }
         }
-        .onChange(of: scenePhase) { _, newValue in
-            if newValue == .active {
-                Task { await store.syncNow() }
-            } else if newValue == .background {
-                Task { await store.flushPendingPersistence() }
-            }
-        }
-        .alert("Sync Error", isPresented: syncErrorBinding) {
-            Button("OK") {
-                store.lastErrorMessage = nil
-            }
-        } message: {
-            Text(store.lastErrorMessage ?? "")
-        }
+        .modifier(StickyNotesSyncModifier(store: store))
     }
 
     private var deleteDialogBinding: Binding<Bool> {
@@ -303,17 +292,6 @@ struct MobileNotesSceneView: View {
             set: { shouldShow in
                 if !shouldShow {
                     noteToDelete = nil
-                }
-            }
-        )
-    }
-
-    private var syncErrorBinding: Binding<Bool> {
-        Binding(
-            get: { store.lastErrorMessage != nil },
-            set: { shouldShow in
-                if !shouldShow {
-                    store.lastErrorMessage = nil
                 }
             }
         )

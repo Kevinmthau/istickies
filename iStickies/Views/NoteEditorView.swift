@@ -285,7 +285,7 @@ private struct IOSStickyTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: UITextView, context: Context) {
-        if textView.text != text {
+        if textView.text != text, !textView.isFirstResponder {
             let priorSelection = textView.selectedRange
             context.coordinator.isApplyingProgrammaticUpdate = true
             textView.text = text

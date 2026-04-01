@@ -37,7 +37,7 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
     }
 
     func focus(noteID: String) {
-        store.openAllNotes()
+        store.openNote(id: noteID)
         syncWindows(with: store.notes)
         bringAllWindowsToFront(prioritizing: noteID)
     }

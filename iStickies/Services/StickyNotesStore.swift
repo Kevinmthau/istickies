@@ -16,7 +16,10 @@ final class StickyNotesStore: ObservableObject {
         var syncDelay: TimeInterval?
     }
 
-    @Published private(set) var notes: [StickyNote] = []
+    @Published private(set) var notes: [StickyNote] = [] {
+        didSet { notesByID = Dictionary(uniqueKeysWithValues: notes.map { ($0.id, $0) }) }
+    }
+    private var notesByID: [String: StickyNote] = [:]
     @Published private(set) var syncState: StickyNotesSyncState = .idle
     @Published private(set) var lastSuccessfulCloudSync: Date?
     @Published private(set) var hasFinishedInitialLoad = false
@@ -72,7 +75,7 @@ final class StickyNotesStore: ObservableObject {
     }
 
     func note(withID id: String) -> StickyNote? {
-        notes.first(where: { $0.id == id })
+        notesByID[id]
     }
 
     @discardableResult
@@ -264,7 +267,13 @@ final class StickyNotesStore: ObservableObject {
     }
 
     private func nextColor() -> StickyNoteColor {
-        .yellow
+        let allColors = StickyNoteColor.allCases
+        guard let lastColor = notes.first?.color,
+              let index = allColors.firstIndex(of: lastColor)
+        else {
+            return .yellow
+        }
+        return allColors[(index + 1) % allColors.count]
     }
 
     private func sortNotes(_ unsortedNotes: [StickyNote]) -> [StickyNote] {
@@ -334,8 +343,11 @@ final class StickyNotesStore: ObservableObject {
     private func scheduleCloudSync(after delay: TimeInterval = stickyNotesDefaultCloudSyncDelay) {
         scheduledSyncTask?.cancel()
         scheduledSyncTask = Task { [weak self] in
-            let nanoseconds = UInt64(delay * 1_000_000_000)
-            try? await Task.sleep(nanoseconds: nanoseconds)
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return
+            }
             await self?.syncNow()
         }
     }
