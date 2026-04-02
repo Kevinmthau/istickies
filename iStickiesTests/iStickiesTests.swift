@@ -110,6 +110,42 @@ struct iStickiesTests {
         #expect(session.draftContent == "Second note")
     }
 
+    @Test func draftSessionIgnoresPersistedChangesWhileLocalEditsArePending() {
+        var persistedContent = "Original"
+        let session = NoteDraftSession(debounceInterval: .seconds(10))
+
+        session.configure(
+            noteID: "note",
+            initialContent: persistedContent,
+            readPersistedContent: { persistedContent },
+            persistDraftContent: { persistedContent = $0 }
+        )
+
+        session.updateDraftContent("Local edit")
+        session.handlePersistedContentChange("Original")
+
+        #expect(session.draftContent == "Local edit")
+    }
+
+    @Test func draftSessionAppliesPersistedChangesAfterLocalEditsFlush() {
+        var persistedContent = "Original"
+        let session = NoteDraftSession(debounceInterval: .seconds(10))
+
+        session.configure(
+            noteID: "note",
+            initialContent: persistedContent,
+            readPersistedContent: { persistedContent },
+            persistDraftContent: { persistedContent = $0 }
+        )
+
+        session.updateDraftContent("Local edit")
+        session.flush()
+        session.handlePersistedContentChange("Remote edit")
+
+        #expect(persistedContent == "Local edit")
+        #expect(session.draftContent == "Remote edit")
+    }
+
     @Test func flushPendingPersistenceKeepsAllCreatedNotesAcrossReload() async throws {
         let fileURL = temporaryStoreURL()
         let fileStore = StickyNotesFileStore(fileURL: fileURL)
@@ -257,31 +293,52 @@ struct iStickiesTests {
         #expect(mergedNote.needsCloudUpload == false)
     }
 
-#if os(macOS)
-    @Test func macTextSyncDefersProgrammaticUpdatesWhileEditorIsActive() {
-        let shouldApply = MacStickyTextViewSync.shouldApplyProgrammaticUpdate(
+    @Test func stickyTextSyncDefersProgrammaticUpdatesWhileEditorIsActive() {
+        let shouldApply = StickyTextEditorSync.shouldApplyProgrammaticUpdate(
             currentText: "Local draft",
             incomingText: "Remote edit",
-            isFirstResponder: true,
+            isEditorActive: true,
             hasMarkedText: false
         )
 
         #expect(shouldApply == false)
     }
 
-    @Test func macTextSyncDefersProgrammaticUpdatesWhileMarkedTextExists() {
-        let shouldApply = MacStickyTextViewSync.shouldApplyProgrammaticUpdate(
+    @Test func stickyTextSyncAllowsProgrammaticUpdatesWhileEditorIsIdle() {
+        let shouldApply = StickyTextEditorSync.shouldApplyProgrammaticUpdate(
             currentText: "Local draft",
             incomingText: "Remote edit",
-            isFirstResponder: false,
+            isEditorActive: false,
+            hasMarkedText: false
+        )
+
+        #expect(shouldApply == true)
+    }
+
+    @Test func stickyTextSyncDefersProgrammaticUpdatesWhileMarkedTextExists() {
+        let shouldApply = StickyTextEditorSync.shouldApplyProgrammaticUpdate(
+            currentText: "Local draft",
+            incomingText: "Remote edit",
+            isEditorActive: false,
             hasMarkedText: true
         )
 
         #expect(shouldApply == false)
     }
 
-    @Test func macTextSyncClampsSelectionToUpdatedContentLength() {
-        let clampedSelection = MacStickyTextViewSync.clampedSelection(
+    @Test func stickyTextSyncIgnoresMatchingProgrammaticUpdates() {
+        let shouldApply = StickyTextEditorSync.shouldApplyProgrammaticUpdate(
+            currentText: "Local draft",
+            incomingText: "Local draft",
+            isEditorActive: false,
+            hasMarkedText: false
+        )
+
+        #expect(shouldApply == false)
+    }
+
+    @Test func stickyTextSyncClampsSelectionToUpdatedContentLength() {
+        let clampedSelection = StickyTextEditorSync.clampedSelection(
             NSRange(location: 12, length: 4),
             utf16Count: 5
         )
@@ -290,6 +347,7 @@ struct iStickiesTests {
         #expect(clampedSelection.length == 0)
     }
 
+#if os(macOS)
     @Test func recentLocalFrameDoesNotGetReappliedToDraggingWindow() {
         let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
         let shouldApply = StickyNoteWindowFrameSync.shouldApplyModelFrame(

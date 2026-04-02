@@ -5,16 +5,15 @@ import AppKit
 import UIKit
 #endif
 
-#if os(macOS)
-enum MacStickyTextViewSync {
+enum StickyTextEditorSync {
     static func shouldApplyProgrammaticUpdate(
         currentText: String,
         incomingText: String,
-        isFirstResponder: Bool,
+        isEditorActive: Bool,
         hasMarkedText: Bool
     ) -> Bool {
         guard currentText != incomingText else { return false }
-        guard !isFirstResponder, !hasMarkedText else { return false }
+        guard !isEditorActive, !hasMarkedText else { return false }
         return true
     }
 
@@ -25,7 +24,6 @@ enum MacStickyTextViewSync {
         return NSRange(location: location, length: length)
     }
 }
-#endif
 
 struct NoteEditorView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -191,10 +189,10 @@ private struct MacStickyTextView: NSViewRepresentable {
 
         let isFirstResponder = textView.window?.firstResponder === textView
         let hasMarkedText = textView.hasMarkedText()
-        guard MacStickyTextViewSync.shouldApplyProgrammaticUpdate(
+        guard StickyTextEditorSync.shouldApplyProgrammaticUpdate(
             currentText: textView.string,
             incomingText: text,
-            isFirstResponder: isFirstResponder,
+            isEditorActive: isFirstResponder,
             hasMarkedText: hasMarkedText
         ) else {
             context.coordinator.pendingProgrammaticText = text
@@ -233,7 +231,7 @@ private struct MacStickyTextView: NSViewRepresentable {
             isApplyingProgrammaticUpdate = true
             textView.string = newText
             textView.setSelectedRange(
-                MacStickyTextViewSync.clampedSelection(
+                StickyTextEditorSync.clampedSelection(
                     selectedRange,
                     utf16Count: newText.utf16.count
                 )
@@ -285,14 +283,29 @@ private struct IOSStickyTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: UITextView, context: Context) {
-        if textView.text != text, !textView.isFirstResponder {
-            let priorSelection = textView.selectedRange
-            context.coordinator.isApplyingProgrammaticUpdate = true
-            textView.text = text
-            textView.selectedRange = clampedSelection(priorSelection, utf16Count: text.utf16.count)
-            context.coordinator.isApplyingProgrammaticUpdate = false
+        guard textView.text != text else {
+            context.coordinator.pendingProgrammaticText = nil
+            applyAutoFocusIfNeeded(to: textView, context: context)
+            return
         }
 
+        let hasMarkedText = textView.markedTextRange != nil
+        guard StickyTextEditorSync.shouldApplyProgrammaticUpdate(
+            currentText: textView.text,
+            incomingText: text,
+            isEditorActive: context.coordinator.isEditing || textView.isFirstResponder,
+            hasMarkedText: hasMarkedText
+        ) else {
+            context.coordinator.pendingProgrammaticText = text
+            applyAutoFocusIfNeeded(to: textView, context: context)
+            return
+        }
+
+        context.coordinator.applyProgrammaticText(text, to: textView)
+        applyAutoFocusIfNeeded(to: textView, context: context)
+    }
+
+    private func applyAutoFocusIfNeeded(to textView: UITextView, context: Context) {
         guard shouldAutoFocus, !context.coordinator.didAutoFocus else { return }
         DispatchQueue.main.async {
             guard textView.window != nil else { return }
@@ -302,26 +315,58 @@ private struct IOSStickyTextView: UIViewRepresentable {
         }
     }
 
-    private func clampedSelection(_ selection: NSRange, utf16Count: Int) -> NSRange {
-        let location = min(selection.location, utf16Count)
-        let maxLength = max(utf16Count - location, 0)
-        let length = min(selection.length, maxLength)
-        return NSRange(location: location, length: length)
-    }
-
     final class Coordinator: NSObject, UITextViewDelegate {
         @Binding private var text: String
 
         var didAutoFocus = false
+        var isEditing = false
         var isApplyingProgrammaticUpdate = false
+        var pendingProgrammaticText: String?
 
         init(text: Binding<String>) {
             _text = text
         }
 
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            isEditing = true
+        }
+
         func textViewDidChange(_ textView: UITextView) {
             guard !isApplyingProgrammaticUpdate else { return }
+            if pendingProgrammaticText == textView.text {
+                pendingProgrammaticText = nil
+            }
             text = textView.text
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            isEditing = false
+            applyPendingProgrammaticTextIfNeeded(to: textView)
+        }
+
+        func applyProgrammaticText(_ newText: String, to textView: UITextView) {
+            let selectedRange = textView.selectedRange
+            isApplyingProgrammaticUpdate = true
+            textView.text = newText
+            textView.selectedRange = StickyTextEditorSync.clampedSelection(
+                selectedRange,
+                utf16Count: newText.utf16.count
+            )
+            isApplyingProgrammaticUpdate = false
+            pendingProgrammaticText = nil
+        }
+
+        private func applyPendingProgrammaticTextIfNeeded(to textView: UITextView) {
+            guard let pendingProgrammaticText else { return }
+            guard !isEditing else { return }
+            guard textView.markedTextRange == nil else { return }
+
+            if textView.text == pendingProgrammaticText {
+                self.pendingProgrammaticText = nil
+                return
+            }
+
+            applyProgrammaticText(pendingProgrammaticText, to: textView)
         }
     }
 }
