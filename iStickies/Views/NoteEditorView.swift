@@ -43,7 +43,7 @@ enum StickyTextEditorLayout {
     }
 }
 
-struct NoteEditorView: View {
+struct StickyNoteEditor: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var store: StickyNotesStore
     @StateObject private var draftSession = NoteDraftSession()
@@ -59,11 +59,6 @@ struct NoteEditorView: View {
     var body: some View {
         if let note = store.note(withID: noteID) {
             configuredEditor(for: note)
-            .background(StickyNoteColor.yellow.tint)
-#if os(iOS)
-            .navigationTitle(note.title)
-            .navigationBarTitleDisplayMode(.inline)
-#endif
         } else {
             ContentUnavailableView("Note Not Found", systemImage: "note.text")
         }
@@ -74,26 +69,12 @@ struct NoteEditorView: View {
 #if os(macOS)
         MacStickyTextView(text: draftContentBinding)
             .padding(14)
-            .background(StickyNoteColor.yellow.tint)
 #else
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-
-                Text(note.lastModified.formatted(date: .abbreviated, time: .shortened))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(StickyNoteColor.yellow.tint.opacity(0.85))
-
-            IOSStickyTextView(
-                text: draftContentBinding,
-                shouldAutoFocus: autoFocusOnAppear
-            )
-                .background(StickyNoteColor.yellow.tint)
-        }
+        IOSStickyTextView(
+            text: draftContentBinding,
+            shouldAutoFocus: autoFocusOnAppear
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
 #endif
     }
 
@@ -147,6 +128,65 @@ struct NoteEditorView: View {
                 store.updateContent(id: currentNoteID, content: content)
             }
         )
+    }
+}
+
+struct NoteEditorView: View {
+    @EnvironmentObject private var store: StickyNotesStore
+
+    let noteID: String
+    let autoFocusOnAppear: Bool
+
+    init(noteID: String, autoFocusOnAppear: Bool = false) {
+        self.noteID = noteID
+        self.autoFocusOnAppear = autoFocusOnAppear
+    }
+
+    var body: some View {
+        if let note = store.note(withID: noteID) {
+#if os(macOS)
+            StickyNoteEditor(noteID: noteID, autoFocusOnAppear: autoFocusOnAppear)
+                .background(StickyNoteColor.yellow.tint)
+#else
+            GeometryReader { proxy in
+                ZStack {
+                    Color(.systemGroupedBackground)
+                        .ignoresSafeArea()
+
+                    VStack {
+                        StickyNoteCardChrome(color: StickyNoteColor.yellow.tint) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Spacer()
+
+                                    Text(note.lastModified.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                StickyNoteEditor(
+                                    noteID: noteID,
+                                    autoFocusOnAppear: autoFocusOnAppear
+                                )
+                            }
+                        }
+                        .frame(
+                            width: StickyNoteCardLayout.cardWidth(for: proxy.size.width),
+                            height: StickyNoteCardLayout.height
+                        )
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.top, StickyNoteCardLayout.outerPadding)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                }
+            }
+            .navigationTitle(note.title)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+        } else {
+            ContentUnavailableView("Note Not Found", systemImage: "note.text")
+        }
     }
 }
 
@@ -274,7 +314,7 @@ private struct MacStickyTextView: NSViewRepresentable {
 }
 #elseif os(iOS)
 private final class CenteredStickyTextView: UITextView {
-    static let editorFont = UIFont.systemFont(ofSize: 24, weight: .regular)
+    static let editorFont = UIFont.preferredFont(forTextStyle: .body)
     static let minimumVerticalInset: CGFloat = 18
     static let horizontalInset: CGFloat = 16
 

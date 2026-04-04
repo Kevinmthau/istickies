@@ -401,6 +401,32 @@ struct iStickiesTests {
         #expect(verticalInset == 18)
     }
 
+    @Test func stickyNoteCardLayoutMatchesDashboardGridWidth() {
+        let cardWidth = StickyNoteCardLayout.cardWidth(for: 390)
+
+        #expect(cardWidth == 171)
+    }
+
+    @Test func stickyNoteDisplayOrderTracksLatestIDsWhenNotEditing() {
+        let orderedIDs = StickyNoteDisplayOrder.reconciledIDs(
+            currentIDs: ["note-c", "note-a"],
+            latestIDs: ["note-a", "note-b", "note-c"],
+            preserveCurrentOrder: false
+        )
+
+        #expect(orderedIDs == ["note-a", "note-b", "note-c"])
+    }
+
+    @Test func stickyNoteDisplayOrderPreservesVisibleOrderWhileEditing() {
+        let orderedIDs = StickyNoteDisplayOrder.reconciledIDs(
+            currentIDs: ["note-c", "note-a"],
+            latestIDs: ["note-a", "note-b", "note-c"],
+            preserveCurrentOrder: true
+        )
+
+        #expect(orderedIDs == ["note-c", "note-a", "note-b"])
+    }
+
 #if os(macOS)
     @Test func recentLocalFrameDoesNotGetReappliedToDraggingWindow() {
         let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
