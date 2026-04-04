@@ -25,6 +25,24 @@ enum StickyTextEditorSync {
     }
 }
 
+enum StickyTextEditorLayout {
+    static func centeredVerticalInset(
+        availableHeight: CGFloat,
+        contentHeight: CGFloat,
+        minimumVerticalInset: CGFloat
+    ) -> CGFloat {
+        let clampedAvailableHeight = max(availableHeight, 0)
+        let clampedContentHeight = max(contentHeight, 0)
+        let minimumRequiredHeight = (minimumVerticalInset * 2) + clampedContentHeight
+
+        guard clampedAvailableHeight > minimumRequiredHeight else {
+            return minimumVerticalInset
+        }
+
+        return minimumVerticalInset + ((clampedAvailableHeight - minimumRequiredHeight) / 2)
+    }
+}
+
 struct NoteEditorView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var store: StickyNotesStore
@@ -255,6 +273,48 @@ private struct MacStickyTextView: NSViewRepresentable {
     }
 }
 #elseif os(iOS)
+private final class CenteredStickyTextView: UITextView {
+    static let editorFont = UIFont.systemFont(ofSize: 24, weight: .regular)
+    static let minimumVerticalInset: CGFloat = 18
+    static let horizontalInset: CGFloat = 16
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateStickyTextInsets()
+    }
+
+    func updateStickyTextInsets() {
+        guard bounds.height > 0 else { return }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphHeight = ceil(layoutManager.usedRect(for: textContainer).height)
+        let contentHeight = max(glyphHeight, font?.lineHeight ?? 0)
+        let verticalInset = StickyTextEditorLayout.centeredVerticalInset(
+            availableHeight: bounds.height,
+            contentHeight: contentHeight,
+            minimumVerticalInset: Self.minimumVerticalInset
+        )
+        let updatedInsets = UIEdgeInsets(
+            top: verticalInset,
+            left: Self.horizontalInset,
+            bottom: verticalInset,
+            right: Self.horizontalInset
+        )
+
+        if textContainerInset != updatedInsets {
+            textContainerInset = updatedInsets
+        }
+
+        let centeredContentHeight = contentHeight + (verticalInset * 2)
+        if centeredContentHeight <= bounds.height + 1,
+           !isTracking,
+           !isDragging,
+           !isDecelerating {
+            setContentOffset(.zero, animated: false)
+        }
+    }
+}
+
 private struct IOSStickyTextView: UIViewRepresentable {
     @Binding var text: String
 
@@ -265,10 +325,11 @@ private struct IOSStickyTextView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView()
+        let textView = CenteredStickyTextView()
         textView.delegate = context.coordinator
         textView.backgroundColor = .clear
-        textView.font = .systemFont(ofSize: 16)
+        textView.font = CenteredStickyTextView.editorFont
+        textView.adjustsFontForContentSizeCategory = true
         textView.textColor = .label
         textView.text = text
         textView.alwaysBounceVertical = true
@@ -277,14 +338,15 @@ private struct IOSStickyTextView: UIViewRepresentable {
         textView.smartQuotesType = .no
         textView.autocapitalizationType = .sentences
         textView.autocorrectionType = .yes
-        textView.textContainerInset = UIEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
         textView.textContainer.lineFragmentPadding = 0
+        textView.updateStickyTextInsets()
         return textView
     }
 
     func updateUIView(_ textView: UITextView, context: Context) {
         guard textView.text != text else {
             context.coordinator.pendingProgrammaticText = nil
+            (textView as? CenteredStickyTextView)?.updateStickyTextInsets()
             applyAutoFocusIfNeeded(to: textView, context: context)
             return
         }
@@ -297,11 +359,13 @@ private struct IOSStickyTextView: UIViewRepresentable {
             hasMarkedText: hasMarkedText
         ) else {
             context.coordinator.pendingProgrammaticText = text
+            (textView as? CenteredStickyTextView)?.updateStickyTextInsets()
             applyAutoFocusIfNeeded(to: textView, context: context)
             return
         }
 
         context.coordinator.applyProgrammaticText(text, to: textView)
+        (textView as? CenteredStickyTextView)?.updateStickyTextInsets()
         applyAutoFocusIfNeeded(to: textView, context: context)
     }
 
@@ -336,6 +400,7 @@ private struct IOSStickyTextView: UIViewRepresentable {
             if pendingProgrammaticText == textView.text {
                 pendingProgrammaticText = nil
             }
+            (textView as? CenteredStickyTextView)?.updateStickyTextInsets()
             text = textView.text
         }
 
@@ -352,6 +417,7 @@ private struct IOSStickyTextView: UIViewRepresentable {
                 selectedRange,
                 utf16Count: newText.utf16.count
             )
+            (textView as? CenteredStickyTextView)?.updateStickyTextInsets()
             isApplyingProgrammaticUpdate = false
             pendingProgrammaticText = nil
         }

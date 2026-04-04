@@ -66,7 +66,14 @@ final class StickyNotesStore: ObservableObject {
             let snapshot = try await fileStore.load()
             cachedCloudKitStateSerializationData = snapshot.cloudKitStateSerializationData
             await cloudService.restore(stateSerializationData: snapshot.cloudKitStateSerializationData)
-            notes = sortNotes(requeueLoadedNotesIfNeeded(snapshot.notes, needsCloudBootstrap: snapshot.cloudKitStateSerializationData == nil))
+            notes = sortNotes(
+                enforceYellowNotes(
+                    requeueLoadedNotesIfNeeded(
+                        snapshot.notes,
+                        needsCloudBootstrap: snapshot.cloudKitStateSerializationData == nil
+                    )
+                )
+            )
             pendingDeletionIDs = Set(snapshot.pendingDeletionIDs)
             lastSuccessfulCloudSync = snapshot.lastSuccessfulCloudSync
         } catch {
@@ -80,7 +87,7 @@ final class StickyNotesStore: ObservableObject {
 
     @discardableResult
     func createNote() -> String {
-        let note = StickyNote(color: nextColor())
+        let note = StickyNote(color: .yellow)
         commitStateChange(
             CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
         ) {
@@ -106,7 +113,7 @@ final class StickyNotesStore: ObservableObject {
             touchModifiedAt: true,
             commitOptions: CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
         ) { note in
-            note.color = color
+            note.color = .yellow
         }
     }
 
@@ -181,8 +188,9 @@ final class StickyNotesStore: ObservableObject {
                 remoteNotes: remoteNotes,
                 pendingDeletionIDs: pendingDeletionIDs
             )
-            if mergeOutcome.notes != notes {
-                notes = sortNotes(mergeOutcome.notes)
+            let mergedNotes = enforceYellowNotes(mergeOutcome.notes)
+            if mergedNotes != notes {
+                notes = sortNotes(mergedNotes)
                 persistSnapshot()
             }
             let syncResult = await cloudService.syncChanges(
@@ -194,7 +202,7 @@ final class StickyNotesStore: ObservableObject {
                 to: notes,
                 pendingDeletionIDs: pendingDeletionIDs
             )
-            notes = sortNotes(syncOutcome.notes)
+            notes = sortNotes(enforceYellowNotes(syncOutcome.notes))
             pendingDeletionIDs = syncOutcome.pendingDeletionIDs
 
             if let failureMessage = syncResult.failureMessage {
@@ -266,14 +274,15 @@ final class StickyNotesStore: ObservableObject {
         }
     }
 
-    private func nextColor() -> StickyNoteColor {
-        let allColors = StickyNoteColor.allCases
-        guard let lastColor = notes.first?.color,
-              let index = allColors.firstIndex(of: lastColor)
-        else {
-            return .yellow
+    private func enforceYellowNotes(_ notes: [StickyNote]) -> [StickyNote] {
+        notes.map { note in
+            guard note.color != .yellow else { return note }
+
+            var copy = note
+            copy.color = .yellow
+            copy.needsCloudUpload = true
+            return copy
         }
-        return allColors[(index + 1) % allColors.count]
     }
 
     private func sortNotes(_ unsortedNotes: [StickyNote]) -> [StickyNote] {

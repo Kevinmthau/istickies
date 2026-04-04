@@ -36,7 +36,41 @@ struct iStickiesTests {
         #expect(store.notes.count == 1)
         #expect(store.notes.first?.id == remoteNote.id)
         #expect(store.notes.first?.content == "Remote note")
+        #expect(store.notes.first?.color == .yellow)
         #expect(store.notes.first?.needsCloudUpload == false)
+
+        let normalizedRemoteNotes = await cloudService.snapshot()
+        #expect(normalizedRemoteNotes.first?.color == .yellow)
+    }
+
+    @Test func loadNormalizesSavedNotesToYellow() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let storedNote = StickyNote(
+            id: "stored-note",
+            content: "Saved note",
+            color: .blue,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: nil
+        )
+        try await fileStore.save(
+            StickyNotesSnapshot(
+                notes: [storedNote],
+                pendingDeletionIDs: [],
+                lastSuccessfulCloudSync: nil,
+                cloudKitStateSerializationData: Data([1])
+            )
+        )
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: MockCloudService(), autoLoad: false)
+
+        await store.load()
+
+        #expect(store.notes.count == 1)
+        #expect(store.notes.first?.color == .yellow)
+        #expect(store.notes.first?.needsCloudUpload == true)
     }
 
     @Test func localEditsPersistAndUpload() async throws {
@@ -345,6 +379,26 @@ struct iStickiesTests {
 
         #expect(clampedSelection.location == 5)
         #expect(clampedSelection.length == 0)
+    }
+
+    @Test func stickyTextLayoutCentersShortContentWithinAvailableHeight() {
+        let verticalInset = StickyTextEditorLayout.centeredVerticalInset(
+            availableHeight: 400,
+            contentHeight: 28,
+            minimumVerticalInset: 18
+        )
+
+        #expect(verticalInset == 186)
+    }
+
+    @Test func stickyTextLayoutFallsBackToMinimumInsetForTallContent() {
+        let verticalInset = StickyTextEditorLayout.centeredVerticalInset(
+            availableHeight: 140,
+            contentHeight: 120,
+            minimumVerticalInset: 18
+        )
+
+        #expect(verticalInset == 18)
     }
 
 #if os(macOS)
