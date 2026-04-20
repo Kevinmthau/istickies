@@ -21,3 +21,23 @@ iStickies is a SwiftUI sticky-notes app for macOS and iOS with local-first persi
   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project iStickies.xcodeproj -scheme iStickies -destination 'platform=macOS' -derivedDataPath /tmp/istickies-deriveddata CODE_SIGNING_ALLOWED=NO build`
 - iOS compile check:
   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project iStickies.xcodeproj -scheme iStickies -destination 'generic/platform=iOS' -derivedDataPath /tmp/istickies-ios-deriveddata CODE_SIGNING_ALLOWED=NO build`
+
+## Xcode Cloud + TestFlight setup
+
+The repo is now prepped for Xcode Cloud with a committed shared scheme (`iStickies.xcodeproj/xcshareddata/xcschemes/iStickies.xcscheme`) plus optional CI scripts under `ci_scripts/`.
+
+1. In Xcode, open `Settings > Accounts` and sign in with the Apple Developer account that owns your App Store Connect app.
+2. Open `iStickies.xcodeproj`, then go to `Report navigator > Cloud` and create a new workflow for this repository.
+3. Configure the workflow:
+   - **Start condition**: your deployment branch (`main` recommended).
+   - **Action**: **Archive** the `iStickies` scheme.
+   - **Post-action**: **Distribute to TestFlight**.
+4. Optional script hooks:
+   - **Post-clone**: `ci_scripts/ci_post_clone.sh`
+   - **Pre-xcodebuild**: `ci_scripts/ci_pre_xcodebuild.sh`
+5. Add signing assets and App Store Connect access in workflow settings, then run the workflow once manually.
+
+### Notes
+
+- Xcode Cloud/TestFlight account linking is configured in Xcode + App Store Connect UI (not in Git files).
+- After the first successful archive/upload run, future branch pushes can auto-publish to TestFlight based on your workflow trigger rules.
