@@ -1,0 +1,35 @@
+name: Trigger Xcode Cloud Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Git branch to build in Xcode Cloud
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch-xcode-cloud:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate App Store Connect JWT token
+        id: asc
+        uses: yuki0n0/action-appstoreconnect-token@v1.0
+        with:
+          issuer id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          key id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          key: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+
+      - name: Trigger Xcode Cloud workflow
+        uses: yorifuji/actions-xcode-cloud-dispatcher@v1
+        with:
+          appstore-connect-token: ${{ steps.asc.outputs.token }}
+          xcode-cloud-workflow-id: ${{ vars.XCODE_CLOUD_WORKFLOW_ID }}
+          git-branch-name: ${{ inputs.branch }}
