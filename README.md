@@ -41,3 +41,19 @@ The repo is now prepped for Xcode Cloud with a committed shared scheme (`iSticki
 
 - Xcode Cloud/TestFlight account linking is configured in Xcode + App Store Connect UI (not in Git files).
 - After the first successful archive/upload run, future branch pushes can auto-publish to TestFlight based on your workflow trigger rules.
+
+## Triggering Xcode Cloud from GitHub
+
+This repository includes a manual GitHub Actions workflow at `.github/workflows/trigger-xcode-cloud.yml` that dispatches an existing Xcode Cloud workflow.
+
+### One-time setup in GitHub
+
+1. Add repository secrets:
+   - `APP_STORE_CONNECT_ISSUER_ID`
+   - `APP_STORE_CONNECT_KEY_ID`
+   - `APP_STORE_CONNECT_PRIVATE_KEY` (full `.p8` key contents)
+2. Add repository variable:
+   - `XCODE_CLOUD_WORKFLOW_ID` (from App Store Connect URL: `/ci/workflows/{workflow-id}`)
+3. In GitHub, run **Actions > Trigger Xcode Cloud Build > Run workflow** and choose the branch to build.
+
+This triggers the Xcode Cloud workflow directly via the App Store Connect API without requiring local Xcode interaction.
