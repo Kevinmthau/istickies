@@ -10,6 +10,20 @@ struct StickyNotesSyncApplicationOutcome: Sendable {
 }
 
 enum StickyNotesMergeEngine {
+    static func mergeLoadedNotes(
+        currentNotes: [StickyNote],
+        loadedNotes: [StickyNote]
+    ) -> [StickyNote] {
+        guard !currentNotes.isEmpty else { return loadedNotes }
+
+        var mergedNotesByID = Dictionary(uniqueKeysWithValues: loadedNotes.map { ($0.id, $0) })
+        for note in currentNotes where note.needsCloudUpload || mergedNotesByID[note.id] == nil {
+            mergedNotesByID[note.id] = note
+        }
+
+        return Array(mergedNotesByID.values)
+    }
+
     static func merge(
         localNotes: [StickyNote],
         remoteNotes: [StickyNote],
@@ -57,7 +71,8 @@ enum StickyNotesMergeEngine {
     static func apply(
         syncResult: CloudSyncBatchResult,
         to localNotes: [StickyNote],
-        pendingDeletionIDs: Set<String>
+        pendingDeletionIDs: Set<String>,
+        sentNotesByID: [String: StickyNote] = [:]
     ) -> StickyNotesSyncApplicationOutcome {
         var notes = localNotes
         var pendingDeletionIDs = pendingDeletionIDs
@@ -67,11 +82,19 @@ enum StickyNotesMergeEngine {
         }
 
         for savedNote in syncResult.savedNotes {
-            replace(note: savedNote.markedClean(), in: &notes)
+            applySavedNote(
+                savedNote.markedClean(),
+                in: &notes,
+                sentNotesByID: sentNotesByID
+            )
         }
 
         for pendingNote in syncResult.pendingNotesRequiringRetry {
-            replace(note: pendingNote, in: &notes)
+            applyPendingRetryNote(
+                pendingNote,
+                in: &notes,
+                sentNotesByID: sentNotesByID
+            )
         }
 
         for conflict in syncResult.conflicts {
@@ -92,6 +115,56 @@ enum StickyNotesMergeEngine {
     private static func replace(note: StickyNote, in notes: inout [StickyNote]) {
         guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
         notes[index] = note
+    }
+
+    private static func applySavedNote(
+        _ savedNote: StickyNote,
+        in notes: inout [StickyNote],
+        sentNotesByID: [String: StickyNote]
+    ) {
+        guard let index = notes.firstIndex(where: { $0.id == savedNote.id }) else { return }
+
+        let currentNote = notes[index]
+        guard hasLocalChangesSinceSend(currentNote, sentNotesByID: sentNotesByID) else {
+            notes[index] = savedNote
+            return
+        }
+
+        notes[index] = refreshedLocalNote(currentNote, cloudMetadataSource: savedNote)
+    }
+
+    private static func applyPendingRetryNote(
+        _ pendingNote: StickyNote,
+        in notes: inout [StickyNote],
+        sentNotesByID: [String: StickyNote]
+    ) {
+        guard let index = notes.firstIndex(where: { $0.id == pendingNote.id }) else { return }
+
+        let currentNote = notes[index]
+        guard hasLocalChangesSinceSend(currentNote, sentNotesByID: sentNotesByID) else {
+            notes[index] = pendingNote
+            return
+        }
+
+        notes[index] = refreshedLocalNote(currentNote, cloudMetadataSource: pendingNote)
+    }
+
+    private static func hasLocalChangesSinceSend(
+        _ note: StickyNote,
+        sentNotesByID: [String: StickyNote]
+    ) -> Bool {
+        guard let sentNote = sentNotesByID[note.id] else { return false }
+        return note != sentNote
+    }
+
+    private static func refreshedLocalNote(
+        _ localNote: StickyNote,
+        cloudMetadataSource: StickyNote
+    ) -> StickyNote {
+        var refreshedNote = localNote
+        refreshedNote.cloudKitSystemFieldsData = cloudMetadataSource.cloudKitSystemFieldsData
+        refreshedNote.needsCloudUpload = true
+        return refreshedNote
     }
 
     private static func remoteReplacement(

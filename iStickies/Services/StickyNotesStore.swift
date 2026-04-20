@@ -28,6 +28,7 @@ final class StickyNotesStore: ObservableObject {
     private let fileStore: StickyNotesFileStore
     private let cloudService: any StickyNotesCloudSyncing
     private var pendingDeletionIDs: Set<String> = []
+    private var hasStartedLoading = false
     private var hasLoaded = false
     private var isSynchronizing = false
     private var scheduledSyncTask: Task<Void, Never>?
@@ -49,7 +50,8 @@ final class StickyNotesStore: ObservableObject {
     }
 
     func loadIfNeeded() {
-        guard !hasLoaded else { return }
+        guard !hasStartedLoading else { return }
+        hasStartedLoading = true
 
         Task {
             await load()
@@ -59,23 +61,17 @@ final class StickyNotesStore: ObservableObject {
 
     func load() async {
         guard !hasLoaded else { return }
-        hasLoaded = true
-        defer { hasFinishedInitialLoad = true }
+        hasStartedLoading = true
+        defer {
+            hasLoaded = true
+            hasFinishedInitialLoad = true
+        }
 
         do {
             let snapshot = try await fileStore.load()
             cachedCloudKitStateSerializationData = snapshot.cloudKitStateSerializationData
             await cloudService.restore(stateSerializationData: snapshot.cloudKitStateSerializationData)
-            notes = sortNotes(
-                enforceYellowNotes(
-                    requeueLoadedNotesIfNeeded(
-                        snapshot.notes,
-                        needsCloudBootstrap: snapshot.cloudKitStateSerializationData == nil
-                    )
-                )
-            )
-            pendingDeletionIDs = Set(snapshot.pendingDeletionIDs)
-            lastSuccessfulCloudSync = snapshot.lastSuccessfulCloudSync
+            applyLoadedSnapshot(snapshot)
         } catch {
             lastErrorMessage = "Failed to restore notes locally: \(error.localizedDescription)"
         }
@@ -193,14 +189,18 @@ final class StickyNotesStore: ObservableObject {
                 notes = sortNotes(mergedNotes)
                 persistSnapshot()
             }
+            let outgoingSaves = notes.filter(\.needsCloudUpload)
+            let outgoingSavesByID = Dictionary(uniqueKeysWithValues: outgoingSaves.map { ($0.id, $0) })
+            let outgoingDeletionIDs = Array(pendingDeletionIDs)
             let syncResult = await cloudService.syncChanges(
-                saves: notes.filter(\.needsCloudUpload),
-                deletions: Array(pendingDeletionIDs)
+                saves: outgoingSaves,
+                deletions: outgoingDeletionIDs
             )
             let syncOutcome = StickyNotesMergeEngine.apply(
                 syncResult: syncResult,
                 to: notes,
-                pendingDeletionIDs: pendingDeletionIDs
+                pendingDeletionIDs: pendingDeletionIDs,
+                sentNotesByID: outgoingSavesByID
             )
             notes = sortNotes(enforceYellowNotes(syncOutcome.notes))
             pendingDeletionIDs = syncOutcome.pendingDeletionIDs
@@ -292,6 +292,34 @@ final class StickyNotesStore: ObservableObject {
             }
 
             return $0.createdAt > $1.createdAt
+        }
+    }
+
+    private func applyLoadedSnapshot(_ snapshot: StickyNotesSnapshot) {
+        let loadedNotes = sortNotes(
+            enforceYellowNotes(
+                requeueLoadedNotesIfNeeded(
+                    snapshot.notes,
+                    needsCloudBootstrap: snapshot.cloudKitStateSerializationData == nil
+                )
+            )
+        )
+
+        notes = sortNotes(
+            StickyNotesMergeEngine.mergeLoadedNotes(
+                currentNotes: notes,
+                loadedNotes: loadedNotes
+            )
+        )
+        pendingDeletionIDs.formUnion(snapshot.pendingDeletionIDs)
+
+        guard let snapshotLastSuccessfulCloudSync = snapshot.lastSuccessfulCloudSync else { return }
+        if let lastSuccessfulCloudSync {
+            if snapshotLastSuccessfulCloudSync > lastSuccessfulCloudSync {
+                self.lastSuccessfulCloudSync = snapshotLastSuccessfulCloudSync
+            }
+        } else {
+            lastSuccessfulCloudSync = snapshotLastSuccessfulCloudSync
         }
     }
 

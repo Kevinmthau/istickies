@@ -98,6 +98,38 @@ struct iStickiesTests {
         #expect(store.note(withID: noteID)?.needsCloudUpload == false)
     }
 
+    @Test func mergeLoadedNotesPreservesDirtyLocalState() {
+        let restoredNote = StickyNote(
+            id: "restored-note",
+            content: "Stored note",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: false,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([1])
+        )
+        let localUnsyncedNote = StickyNote(
+            id: "local-note",
+            content: "Local draft",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 40),
+            lastModified: Date(timeIntervalSince1970: 50),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: nil
+        )
+        let mergedNotes = StickyNotesMergeEngine.mergeLoadedNotes(
+            currentNotes: [localUnsyncedNote],
+            loadedNotes: [restoredNote]
+        )
+
+        #expect(mergedNotes.contains(where: { $0.id == restoredNote.id }))
+        #expect(mergedNotes.contains(where: { $0.id == localUnsyncedNote.id }))
+    }
+
     @Test func draftSessionPersistsLatestContentAfterDebounce() async throws {
         var persistedContent = "Original"
         let session = NoteDraftSession()
@@ -325,6 +357,59 @@ struct iStickiesTests {
         #expect(mergedNote.isOpen)
         #expect(mergedNote.preferredFrame == localFrame)
         #expect(mergedNote.needsCloudUpload == false)
+    }
+
+    @Test func syncApplyPreservesLocalEditsMadeAfterSaveWasSent() {
+        let originalSystemFields = Data([1])
+        let refreshedSystemFields = Data([2])
+        let sentNote = StickyNote(
+            id: "shared-note",
+            content: "First draft",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: StickyNoteFrame(x: 40, y: 60, width: 280, height: 280),
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: originalSystemFields
+        )
+        let newerLocalNote = StickyNote(
+            id: "shared-note",
+            content: "Second draft",
+            color: .yellow,
+            createdAt: sentNote.createdAt,
+            lastModified: Date(timeIntervalSince1970: 30),
+            isOpen: false,
+            preferredFrame: StickyNoteFrame(x: 90, y: 120, width: 320, height: 300),
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: originalSystemFields
+        )
+        let savedNote = StickyNote(
+            id: "shared-note",
+            content: "First draft",
+            color: .yellow,
+            createdAt: sentNote.createdAt,
+            lastModified: sentNote.lastModified,
+            isOpen: true,
+            preferredFrame: sentNote.preferredFrame,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: refreshedSystemFields
+        )
+
+        let outcome = StickyNotesMergeEngine.apply(
+            syncResult: CloudSyncBatchResult(savedNotes: [savedNote]),
+            to: [newerLocalNote],
+            pendingDeletionIDs: [],
+            sentNotesByID: [sentNote.id: sentNote]
+        )
+        let preservedNote = try! #require(outcome.notes.first)
+
+        #expect(preservedNote.content == "Second draft")
+        #expect(preservedNote.lastModified == newerLocalNote.lastModified)
+        #expect(preservedNote.isOpen == false)
+        #expect(preservedNote.preferredFrame == newerLocalNote.preferredFrame)
+        #expect(preservedNote.needsCloudUpload)
+        #expect(preservedNote.cloudKitSystemFieldsData == refreshedSystemFields)
     }
 
     @Test func stickyTextSyncDefersProgrammaticUpdatesWhileEditorIsActive() {
