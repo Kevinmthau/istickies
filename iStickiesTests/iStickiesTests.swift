@@ -89,6 +89,20 @@ struct iStickiesTests {
         #expect(note.isOpen)
     }
 
+    @Test func cloudKitRecordWithoutCreatedAtFallsBackToLastModified() throws {
+        let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
+        let record = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        let lastModified = Date(timeIntervalSince1970: 20)
+        record["content"] = "Remote note" as CKRecordValue
+        record["lastModified"] = lastModified as CKRecordValue
+
+        let note = try #require(StickyNote(record: record))
+
+        #expect(note.id == "remote-note")
+        #expect(note.createdAt == lastModified)
+        #expect(note.lastModified == lastModified)
+    }
+
     @Test func cloudKitRecordWriteOmitsColorFieldFromRestoredRecords() {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
         let archivedRecord = CKRecord(recordType: StickyNote.recordType, recordID: recordID)

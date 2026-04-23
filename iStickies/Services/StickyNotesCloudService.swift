@@ -699,11 +699,16 @@ extension StickyNote {
     init?(record: CKRecord) {
         guard record.recordType == StickyNote.recordType,
               let content = record[StickyNoteRecordField.content] as? String,
-              let createdAt = record[StickyNoteRecordField.createdAt] as? Date,
               let lastModified = record[StickyNoteRecordField.lastModified] as? Date
         else {
             return nil
         }
+
+        // Fall back to server metadata when the deployed schema is missing `createdAt`.
+        let createdAt =
+            (record[StickyNoteRecordField.createdAt] as? Date)
+            ?? record.creationDate
+            ?? lastModified
 
         let color: StickyNoteColor
         if let colorRawValue = record[StickyNoteRecordField.color] as? String,
