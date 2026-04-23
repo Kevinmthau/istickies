@@ -117,7 +117,8 @@ final class StickyNotesStore: ObservableObject {
         mutateNote(
             id: id,
             touchModifiedAt: false,
-            commitOptions: CommitOptions(syncDelay: stickyNotesDefaultCloudSyncDelay)
+            markNeedsCloudUpload: false,
+            commitOptions: CommitOptions()
         ) { note in
             note.preferredFrame = frame
         }
@@ -127,21 +128,21 @@ final class StickyNotesStore: ObservableObject {
         mutateNote(
             id: id,
             touchModifiedAt: false,
-            commitOptions: CommitOptions(syncDelay: stickyNotesDefaultCloudSyncDelay)
+            markNeedsCloudUpload: false,
+            commitOptions: CommitOptions()
         ) { note in
             note.isOpen = true
         }
     }
 
     func openAllNotes() {
-        commitStateChange(CommitOptions(syncDelay: stickyNotesDefaultCloudSyncDelay)) {
+        commitStateChange {
             var changed = false
             notes = notes.map { note in
                 guard !note.isOpen else { return note }
                 changed = true
                 var copy = note
                 copy.isOpen = true
-                copy.needsCloudUpload = true
                 return copy
             }
             return changed
@@ -152,7 +153,8 @@ final class StickyNotesStore: ObservableObject {
         mutateNote(
             id: id,
             touchModifiedAt: false,
-            commitOptions: CommitOptions(syncDelay: stickyNotesDefaultCloudSyncDelay)
+            markNeedsCloudUpload: false,
+            commitOptions: CommitOptions()
         ) { note in
             note.isOpen = false
             if let frame {
@@ -235,6 +237,7 @@ final class StickyNotesStore: ObservableObject {
     private func mutateNote(
         id: String,
         touchModifiedAt: Bool,
+        markNeedsCloudUpload: Bool = true,
         commitOptions: CommitOptions,
         mutation: (inout StickyNote) -> Void
     ) {
@@ -243,7 +246,9 @@ final class StickyNotesStore: ObservableObject {
         let original = notes[index]
         var updated = original
         mutation(&updated)
-        updated.needsCloudUpload = true
+        if markNeedsCloudUpload {
+            updated.needsCloudUpload = true
+        }
         if touchModifiedAt {
             updated.lastModified = Date()
         }

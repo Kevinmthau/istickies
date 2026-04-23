@@ -719,17 +719,6 @@ extension StickyNote {
             color = .yellow
         }
 
-        let frame: StickyNoteFrame?
-        if let x = record[StickyNoteRecordField.frameX] as? Double,
-           let y = record[StickyNoteRecordField.frameY] as? Double,
-           let width = record[StickyNoteRecordField.frameWidth] as? Double,
-           let height = record[StickyNoteRecordField.frameHeight] as? Double
-        {
-            frame = StickyNoteFrame(x: x, y: y, width: width, height: height)
-        } else {
-            frame = nil
-        }
-
         self.init(
             id: record.recordID.recordName,
             content: content,
@@ -737,8 +726,8 @@ extension StickyNote {
             color: color,
             createdAt: createdAt,
             lastModified: lastModified,
-            isOpen: (record[StickyNoteRecordField.isOpen] as? NSNumber)?.boolValue ?? true,
-            preferredFrame: frame,
+            isOpen: true,
+            preferredFrame: nil,
             needsCloudUpload: false,
             cloudKitSystemFieldsData: record.encodedSystemFieldsData()
         )
@@ -761,24 +750,16 @@ extension StickyNote {
         } else {
             record[StickyNoteRecordField.titleOverride] = nil
         }
-        // Keep writes compatible with the deployed production schema, which no longer has
-        // `color` or `createdAt`.
+        // Keep writes compatible with the deployed production schema. Shared CloudKit records
+        // only store note content metadata; window visibility and frame are local device state.
         record[StickyNoteRecordField.color] = nil
         record[StickyNoteRecordField.createdAt] = nil
         record[StickyNoteRecordField.lastModified] = lastModified as CKRecordValue
-        record[StickyNoteRecordField.isOpen] = NSNumber(value: isOpen)
-
-        if let preferredFrame {
-            record[StickyNoteRecordField.frameX] = NSNumber(value: preferredFrame.x)
-            record[StickyNoteRecordField.frameY] = NSNumber(value: preferredFrame.y)
-            record[StickyNoteRecordField.frameWidth] = NSNumber(value: preferredFrame.width)
-            record[StickyNoteRecordField.frameHeight] = NSNumber(value: preferredFrame.height)
-        } else {
-            record[StickyNoteRecordField.frameX] = nil
-            record[StickyNoteRecordField.frameY] = nil
-            record[StickyNoteRecordField.frameWidth] = nil
-            record[StickyNoteRecordField.frameHeight] = nil
-        }
+        record[StickyNoteRecordField.isOpen] = nil
+        record[StickyNoteRecordField.frameX] = nil
+        record[StickyNoteRecordField.frameY] = nil
+        record[StickyNoteRecordField.frameWidth] = nil
+        record[StickyNoteRecordField.frameHeight] = nil
     }
 
     private func restoredRecord(expectedRecordID: CKRecord.ID) -> CKRecord? {

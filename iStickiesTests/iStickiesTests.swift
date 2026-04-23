@@ -103,6 +103,23 @@ struct iStickiesTests {
         #expect(note.lastModified == lastModified)
     }
 
+    @Test func cloudKitRecordIgnoresRemoteWindowState() throws {
+        let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
+        let record = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        record["content"] = "Remote note" as CKRecordValue
+        record["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
+        record["isOpen"] = NSNumber(value: false)
+        record["frameX"] = NSNumber(value: 40)
+        record["frameY"] = NSNumber(value: 60)
+        record["frameWidth"] = NSNumber(value: 280)
+        record["frameHeight"] = NSNumber(value: 300)
+
+        let note = try #require(StickyNote(record: record))
+
+        #expect(note.isOpen == true)
+        #expect(note.preferredFrame == nil)
+    }
+
     @Test func cloudKitRecordWriteOmitsColorFieldFromRestoredRecords() {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
         let archivedRecord = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
@@ -166,6 +183,47 @@ struct iStickiesTests {
         #expect(record["content"] as? String == "Updated")
     }
 
+    @Test func cloudKitRecordWriteOmitsLocalWindowStateFieldsFromRestoredRecords() {
+        let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
+        let archivedRecord = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        archivedRecord["content"] = "Original" as CKRecordValue
+        archivedRecord["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
+        archivedRecord["isOpen"] = NSNumber(value: true)
+        archivedRecord["frameX"] = NSNumber(value: 12)
+        archivedRecord["frameY"] = NSNumber(value: 24)
+        archivedRecord["frameWidth"] = NSNumber(value: 280)
+        archivedRecord["frameHeight"] = NSNumber(value: 300)
+
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        archivedRecord.encodeSystemFields(with: archiver)
+        archiver.finishEncoding()
+
+        let note = StickyNote(
+            id: "remote-note",
+            content: "Updated",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 30),
+            isOpen: false,
+            preferredFrame: StickyNoteFrame(x: 40, y: 60, width: 320, height: 280),
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: archiver.encodedData
+        )
+
+        let record = note.makeRecord(zoneID: .default)
+
+        #expect(record["isOpen"] == nil)
+        #expect(record["frameX"] == nil)
+        #expect(record["frameY"] == nil)
+        #expect(record["frameWidth"] == nil)
+        #expect(record["frameHeight"] == nil)
+        #expect(record.allKeys().contains("isOpen") == false)
+        #expect(record.allKeys().contains("frameX") == false)
+        #expect(record.allKeys().contains("frameY") == false)
+        #expect(record.allKeys().contains("frameWidth") == false)
+        #expect(record.allKeys().contains("frameHeight") == false)
+    }
+
     @Test func localEditsPersistAndUpload() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let cloudService = MockCloudService()
@@ -189,6 +247,31 @@ struct iStickiesTests {
         })
         #expect(uploadedLocalChange)
         #expect(store.note(withID: noteID)?.needsCloudUpload == false)
+    }
+
+    @Test func localWindowStatePersistsWithoutMarkingNoteDirtyForCloudSync() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let cloudService = MockCloudService()
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: cloudService, autoLoad: false)
+
+        await store.load()
+        let noteID = store.createNote()
+        await store.syncNow()
+
+        let frame = StickyNoteFrame(x: 80, y: 120, width: 320, height: 280)
+        store.closeNote(id: noteID, frame: frame)
+
+        let closedNote = try #require(store.note(withID: noteID))
+        #expect(closedNote.isOpen == false)
+        #expect(closedNote.preferredFrame == frame)
+        #expect(closedNote.needsCloudUpload == false)
+
+        store.openNote(id: noteID)
+
+        let reopenedNote = try #require(store.note(withID: noteID))
+        #expect(reopenedNote.isOpen == true)
+        #expect(reopenedNote.preferredFrame == frame)
+        #expect(reopenedNote.needsCloudUpload == false)
     }
 
     @Test func mergeLoadedNotesPreservesDirtyLocalState() {
@@ -575,6 +658,55 @@ struct iStickiesTests {
         let mergedNote = try! #require(outcome.notes.first)
 
         #expect(mergedNote.createdAt == localCreatedAt)
+        #expect(mergedNote.needsCloudUpload == false)
+        #expect(mergedNote.cloudKitSystemFieldsData == Data([2]))
+    }
+
+    @Test func syncApplyDoesNotRequeuePurelyLocalWindowChangesMadeAfterSaveWasSent() {
+        let sentNote = StickyNote(
+            id: "shared-note",
+            content: "Draft",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: Data([1])
+        )
+        let locallyMovedNote = StickyNote(
+            id: sentNote.id,
+            content: sentNote.content,
+            color: .yellow,
+            createdAt: sentNote.createdAt,
+            lastModified: sentNote.lastModified,
+            isOpen: false,
+            preferredFrame: StickyNoteFrame(x: 40, y: 60, width: 320, height: 280),
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: sentNote.cloudKitSystemFieldsData
+        )
+        let savedNote = StickyNote(
+            id: sentNote.id,
+            content: sentNote.content,
+            color: .yellow,
+            createdAt: sentNote.createdAt,
+            lastModified: sentNote.lastModified,
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([2])
+        )
+
+        let outcome = StickyNotesMergeEngine.apply(
+            syncResult: CloudSyncBatchResult(savedNotes: [savedNote]),
+            to: [locallyMovedNote],
+            pendingDeletionIDs: [],
+            sentNotesByID: [sentNote.id: sentNote]
+        )
+        let mergedNote = try! #require(outcome.notes.first)
+
+        #expect(mergedNote.isOpen == false)
+        #expect(mergedNote.preferredFrame == locallyMovedNote.preferredFrame)
         #expect(mergedNote.needsCloudUpload == false)
         #expect(mergedNote.cloudKitSystemFieldsData == Data([2]))
     }

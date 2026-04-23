@@ -125,7 +125,7 @@ enum StickyNotesMergeEngine {
         guard let index = notes.firstIndex(where: { $0.id == savedNote.id }) else { return }
 
         let currentNote = notes[index]
-        guard hasLocalChangesSinceSend(currentNote, sentNotesByID: sentNotesByID) else {
+        guard hasCloudChangesSinceSend(currentNote, sentNotesByID: sentNotesByID) else {
             notes[index] = remoteReplacement(from: savedNote, preservingWindowStateFrom: currentNote)
             return
         }
@@ -141,7 +141,7 @@ enum StickyNotesMergeEngine {
         guard let index = notes.firstIndex(where: { $0.id == pendingNote.id }) else { return }
 
         let currentNote = notes[index]
-        guard hasLocalChangesSinceSend(currentNote, sentNotesByID: sentNotesByID) else {
+        guard hasCloudChangesSinceSend(currentNote, sentNotesByID: sentNotesByID) else {
             notes[index] = pendingNote
             return
         }
@@ -149,12 +149,14 @@ enum StickyNotesMergeEngine {
         notes[index] = refreshedLocalNote(currentNote, cloudMetadataSource: pendingNote)
     }
 
-    private static func hasLocalChangesSinceSend(
+    private static func hasCloudChangesSinceSend(
         _ note: StickyNote,
         sentNotesByID: [String: StickyNote]
     ) -> Bool {
         guard let sentNote = sentNotesByID[note.id] else { return false }
-        return note != sentNote
+        return note.content != sentNote.content
+            || note.titleOverride != sentNote.titleOverride
+            || note.lastModified != sentNote.lastModified
     }
 
     private static func refreshedLocalNote(
@@ -174,7 +176,7 @@ enum StickyNotesMergeEngine {
         var merged = remote.markedClean()
         merged.createdAt = min(local.createdAt, remote.createdAt)
         merged.isOpen = local.isOpen
-        merged.preferredFrame = local.preferredFrame ?? remote.preferredFrame
+        merged.preferredFrame = local.preferredFrame
         return merged
     }
 
