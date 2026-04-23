@@ -699,12 +699,19 @@ extension StickyNote {
     init?(record: CKRecord) {
         guard record.recordType == StickyNote.recordType,
               let content = record[StickyNoteRecordField.content] as? String,
-              let colorRawValue = record[StickyNoteRecordField.color] as? String,
-              let color = StickyNoteColor(rawValue: colorRawValue),
               let createdAt = record[StickyNoteRecordField.createdAt] as? Date,
               let lastModified = record[StickyNoteRecordField.lastModified] as? Date
         else {
             return nil
+        }
+
+        let color: StickyNoteColor
+        if let colorRawValue = record[StickyNoteRecordField.color] as? String,
+           let decodedColor = StickyNoteColor(rawValue: colorRawValue)
+        {
+            color = decodedColor
+        } else {
+            color = .yellow
         }
 
         let frame: StickyNoteFrame?
@@ -749,7 +756,8 @@ extension StickyNote {
         } else {
             record[StickyNoteRecordField.titleOverride] = nil
         }
-        record[StickyNoteRecordField.color] = color.rawValue as CKRecordValue
+        // Keep writes compatible with the deployed production schema, which no longer has `color`.
+        record[StickyNoteRecordField.color] = nil
         record[StickyNoteRecordField.createdAt] = createdAt as CKRecordValue
         record[StickyNoteRecordField.lastModified] = lastModified as CKRecordValue
         record[StickyNoteRecordField.isOpen] = NSNumber(value: isOpen)

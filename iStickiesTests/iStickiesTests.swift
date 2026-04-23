@@ -5,6 +5,7 @@
 //  Created by Kevin Thau on 5/15/25.
 //
 
+import CloudKit
 import Foundation
 import Testing
 @testable import iStickies
@@ -71,6 +72,53 @@ struct iStickiesTests {
         #expect(store.notes.count == 1)
         #expect(store.notes.first?.color == .yellow)
         #expect(store.notes.first?.needsCloudUpload == true)
+    }
+
+    @Test func cloudKitRecordWithoutColorDefaultsToYellow() throws {
+        let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
+        let record = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        record["content"] = "Remote note" as CKRecordValue
+        record["createdAt"] = Date(timeIntervalSince1970: 10) as CKRecordValue
+        record["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
+
+        let note = try #require(StickyNote(record: record))
+
+        #expect(note.id == "remote-note")
+        #expect(note.content == "Remote note")
+        #expect(note.color == .yellow)
+        #expect(note.isOpen)
+    }
+
+    @Test func cloudKitRecordWriteOmitsColorFieldFromRestoredRecords() {
+        let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
+        let archivedRecord = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        archivedRecord["content"] = "Original" as CKRecordValue
+        archivedRecord["color"] = StickyNoteColor.blue.rawValue as CKRecordValue
+        archivedRecord["createdAt"] = Date(timeIntervalSince1970: 10) as CKRecordValue
+        archivedRecord["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
+
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        archivedRecord.encodeSystemFields(with: archiver)
+        archiver.finishEncoding()
+
+        let note = StickyNote(
+            id: "remote-note",
+            content: "Updated",
+            color: .orange,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 30),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: archiver.encodedData
+        )
+
+        let record = note.makeRecord(zoneID: .default)
+        let color = record["color"] as? String
+
+        #expect(color == nil)
+        #expect(record.allKeys().contains("color") == false)
+        #expect(record["content"] as? String == "Updated")
     }
 
     @Test func localEditsPersistAndUpload() async throws {
