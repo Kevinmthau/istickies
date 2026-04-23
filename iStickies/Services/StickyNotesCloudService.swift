@@ -761,9 +761,10 @@ extension StickyNote {
         } else {
             record[StickyNoteRecordField.titleOverride] = nil
         }
-        // Keep writes compatible with the deployed production schema, which no longer has `color`.
+        // Keep writes compatible with the deployed production schema, which no longer has
+        // `color` or `createdAt`.
         record[StickyNoteRecordField.color] = nil
-        record[StickyNoteRecordField.createdAt] = createdAt as CKRecordValue
+        record[StickyNoteRecordField.createdAt] = nil
         record[StickyNoteRecordField.lastModified] = lastModified as CKRecordValue
         record[StickyNoteRecordField.isOpen] = NSNumber(value: isOpen)
 

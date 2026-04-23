@@ -135,6 +135,37 @@ struct iStickiesTests {
         #expect(record["content"] as? String == "Updated")
     }
 
+    @Test func cloudKitRecordWriteOmitsCreatedAtFieldFromRestoredRecords() {
+        let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
+        let archivedRecord = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        archivedRecord["content"] = "Original" as CKRecordValue
+        archivedRecord["createdAt"] = Date(timeIntervalSince1970: 10) as CKRecordValue
+        archivedRecord["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
+
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        archivedRecord.encodeSystemFields(with: archiver)
+        archiver.finishEncoding()
+
+        let note = StickyNote(
+            id: "remote-note",
+            content: "Updated",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 30),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: archiver.encodedData
+        )
+
+        let record = note.makeRecord(zoneID: .default)
+        let createdAt = record["createdAt"] as? Date
+
+        #expect(createdAt == nil)
+        #expect(record.allKeys().contains("createdAt") == false)
+        #expect(record["content"] as? String == "Updated")
+    }
+
     @Test func localEditsPersistAndUpload() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let cloudService = MockCloudService()
