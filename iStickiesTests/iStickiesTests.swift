@@ -452,6 +452,42 @@ struct iStickiesTests {
         #expect(mergedNote.needsCloudUpload == false)
     }
 
+    @Test func mergeEnginePreservesEarlierLocalCreatedAtWhenRemoteFallbackIsNewer() {
+        let localNote = StickyNote(
+            id: "shared-note",
+            content: "Local",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: nil
+        )
+        let remoteNote = StickyNote(
+            id: "shared-note",
+            content: "Remote",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 40),
+            lastModified: Date(timeIntervalSince1970: 30),
+            isOpen: false,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: nil
+        )
+
+        let outcome = StickyNotesMergeEngine.merge(
+            localNotes: [localNote],
+            remoteNotes: [remoteNote],
+            pendingDeletionIDs: []
+        )
+        let mergedNote = try! #require(outcome.notes.first)
+
+        #expect(mergedNote.createdAt == localNote.createdAt)
+        #expect(mergedNote.lastModified == remoteNote.lastModified)
+        #expect(mergedNote.content == remoteNote.content)
+    }
+
     @Test func syncApplyPreservesLocalEditsMadeAfterSaveWasSent() {
         let originalSystemFields = Data([1])
         let refreshedSystemFields = Data([2])
@@ -503,6 +539,44 @@ struct iStickiesTests {
         #expect(preservedNote.preferredFrame == newerLocalNote.preferredFrame)
         #expect(preservedNote.needsCloudUpload)
         #expect(preservedNote.cloudKitSystemFieldsData == refreshedSystemFields)
+    }
+
+    @Test func syncApplyPreservesEarlierLocalCreatedAtWhenSavedRecordUsesUploadTime() {
+        let localCreatedAt = Date(timeIntervalSince1970: 10)
+        let sentNote = StickyNote(
+            id: "shared-note",
+            content: "Draft",
+            color: .yellow,
+            createdAt: localCreatedAt,
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: Data([1])
+        )
+        let savedNote = StickyNote(
+            id: sentNote.id,
+            content: sentNote.content,
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 40),
+            lastModified: sentNote.lastModified,
+            isOpen: sentNote.isOpen,
+            preferredFrame: sentNote.preferredFrame,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([2])
+        )
+
+        let outcome = StickyNotesMergeEngine.apply(
+            syncResult: CloudSyncBatchResult(savedNotes: [savedNote]),
+            to: [sentNote],
+            pendingDeletionIDs: [],
+            sentNotesByID: [sentNote.id: sentNote]
+        )
+        let mergedNote = try! #require(outcome.notes.first)
+
+        #expect(mergedNote.createdAt == localCreatedAt)
+        #expect(mergedNote.needsCloudUpload == false)
+        #expect(mergedNote.cloudKitSystemFieldsData == Data([2]))
     }
 
     @Test func stickyTextSyncDefersProgrammaticUpdatesWhileEditorIsActive() {

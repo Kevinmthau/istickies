@@ -126,7 +126,7 @@ enum StickyNotesMergeEngine {
 
         let currentNote = notes[index]
         guard hasLocalChangesSinceSend(currentNote, sentNotesByID: sentNotesByID) else {
-            notes[index] = savedNote
+            notes[index] = remoteReplacement(from: savedNote, preservingWindowStateFrom: currentNote)
             return
         }
 
@@ -172,6 +172,7 @@ enum StickyNotesMergeEngine {
         preservingWindowStateFrom local: StickyNote
     ) -> StickyNote {
         var merged = remote.markedClean()
+        merged.createdAt = min(local.createdAt, remote.createdAt)
         merged.isOpen = local.isOpen
         merged.preferredFrame = local.preferredFrame ?? remote.preferredFrame
         return merged
