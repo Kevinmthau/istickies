@@ -219,8 +219,8 @@ private struct MacStickyTextView: NSViewRepresentable {
         textView.allowsUndo = true
         textView.drawsBackground = false
         textView.font = .systemFont(ofSize: 18)
-        textView.textColor = .textColor
-        textView.insertionPointColor = .textColor
+        textView.textColor = .black
+        textView.insertionPointColor = .black
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
@@ -370,7 +370,7 @@ private struct IOSStickyTextView: UIViewRepresentable {
         textView.backgroundColor = .clear
         textView.font = CenteredStickyTextView.editorFont
         textView.adjustsFontForContentSizeCategory = true
-        textView.textColor = .label
+        textView.textColor = .black
         textView.text = text
         textView.alwaysBounceVertical = true
         textView.keyboardDismissMode = .interactive

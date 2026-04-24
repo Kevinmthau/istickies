@@ -52,7 +52,7 @@ enum StickyNoteColor: String, Codable, CaseIterable, Identifiable, Sendable {
 
     private var darkTint: RGB {
         switch self {
-        case .yellow: RGB(red: 0.37, green: 0.34, blue: 0.17)
+        case .yellow: RGB(red: 0.99, green: 0.96, blue: 0.63)
         case .mint: RGB(red: 0.21, green: 0.36, blue: 0.30)
         case .blue: RGB(red: 0.20, green: 0.30, blue: 0.42)
         case .orange: RGB(red: 0.40, green: 0.29, blue: 0.17)
