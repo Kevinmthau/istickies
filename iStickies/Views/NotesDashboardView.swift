@@ -25,9 +25,9 @@ struct StickyNoteCardChrome<Content: View>: View {
             .clipShape(RoundedRectangle(cornerRadius: StickyNoteCardLayout.cornerRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: StickyNoteCardLayout.cornerRadius, style: .continuous)
-                    .strokeBorder(.black.opacity(0.08), lineWidth: 1)
+                    .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
             }
-            .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
+            .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
     }
 }
 

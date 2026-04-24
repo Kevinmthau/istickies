@@ -146,7 +146,7 @@ struct NoteEditorView: View {
         if let note = store.note(withID: noteID) {
 #if os(macOS)
             StickyNoteEditor(noteID: noteID, autoFocusOnAppear: autoFocusOnAppear)
-                .background(StickyNoteColor.yellow.tint)
+                .background(note.color.tint)
 #else
             GeometryReader { proxy in
                 ZStack {
@@ -154,7 +154,7 @@ struct NoteEditorView: View {
                         .ignoresSafeArea()
 
                     VStack {
-                        StickyNoteCardChrome(color: StickyNoteColor.yellow.tint) {
+                        StickyNoteCardChrome(color: note.color.tint) {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
                                     Spacer()
