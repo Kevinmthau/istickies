@@ -212,6 +212,8 @@ struct NoteEditorView: View {
 private struct MacStickyTextView: NSViewRepresentable {
     @Binding var text: String
 
+    private static let minimumVerticalInset: CGFloat = 18
+
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
     }
@@ -242,7 +244,7 @@ private struct MacStickyTextView: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
-        textView.textContainerInset = NSSize(width: 0, height: 4)
+        textView.textContainerInset = NSSize(width: 0, height: Self.minimumVerticalInset)
         textView.string = text
 
         if let textContainer = textView.textContainer {
@@ -251,6 +253,7 @@ private struct MacStickyTextView: NSViewRepresentable {
         }
 
         scrollView.documentView = textView
+        Self.updateStickyTextInsets(in: scrollView, textView: textView)
 
         return scrollView
     }
@@ -260,6 +263,7 @@ private struct MacStickyTextView: NSViewRepresentable {
 
         guard textView.string != text else {
             context.coordinator.pendingProgrammaticText = nil
+            Self.updateStickyTextInsets(in: scrollView, textView: textView)
             return
         }
 
@@ -272,10 +276,33 @@ private struct MacStickyTextView: NSViewRepresentable {
             hasMarkedText: hasMarkedText
         ) else {
             context.coordinator.pendingProgrammaticText = text
+            Self.updateStickyTextInsets(in: scrollView, textView: textView)
             return
         }
 
         context.coordinator.applyProgrammaticText(text, to: textView)
+        Self.updateStickyTextInsets(in: scrollView, textView: textView)
+    }
+
+    private static func updateStickyTextInsets(in scrollView: NSScrollView, textView: NSTextView) {
+        guard scrollView.contentView.bounds.height > 0 else { return }
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else { return }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphHeight = ceil(layoutManager.usedRect(for: textContainer).height)
+        let fontHeight = textView.font.map { ceil($0.ascender - $0.descender + $0.leading) } ?? 0
+        let contentHeight = max(glyphHeight, fontHeight)
+        let verticalInset = StickyTextEditorLayout.centeredVerticalInset(
+            availableHeight: scrollView.contentView.bounds.height,
+            contentHeight: contentHeight,
+            minimumVerticalInset: Self.minimumVerticalInset
+        )
+        let updatedInset = NSSize(width: 0, height: verticalInset)
+
+        if textView.textContainerInset != updatedInset {
+            textView.textContainerInset = updatedInset
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -293,6 +320,9 @@ private struct MacStickyTextView: NSViewRepresentable {
             guard !isApplyingProgrammaticUpdate else { return }
             if pendingProgrammaticText == textView.string {
                 pendingProgrammaticText = nil
+            }
+            if let scrollView = textView.enclosingScrollView {
+                MacStickyTextView.updateStickyTextInsets(in: scrollView, textView: textView)
             }
             text = textView.string
         }
@@ -314,6 +344,9 @@ private struct MacStickyTextView: NSViewRepresentable {
             )
             isApplyingProgrammaticUpdate = false
             pendingProgrammaticText = nil
+            if let scrollView = textView.enclosingScrollView {
+                MacStickyTextView.updateStickyTextInsets(in: scrollView, textView: textView)
+            }
         }
 
         private func applyPendingProgrammaticTextIfNeeded(to textView: NSTextView) {

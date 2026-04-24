@@ -68,9 +68,7 @@ struct StickyNoteCardView: View {
                     .foregroundStyle(.black)
                     .lineLimit(8)
                     .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }
         }
     }
