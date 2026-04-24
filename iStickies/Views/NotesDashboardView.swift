@@ -64,7 +64,7 @@ struct StickyNoteCardView: View {
                 }
 
                 Text(note.content.isEmpty ? "Empty Note" : note.content)
-                    .font(.body)
+                    .font(StickyNoteTypography.bodyFont)
                     .foregroundStyle(.black)
                     .lineLimit(8)
                     .multilineTextAlignment(.leading)

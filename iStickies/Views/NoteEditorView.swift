@@ -43,6 +43,24 @@ enum StickyTextEditorLayout {
     }
 }
 
+enum StickyNoteTypography {
+    static let bodySize: CGFloat = 17
+    static let editorSize: CGFloat = 18
+
+    static let bodyFont: Font = .custom("SF Pro", size: bodySize, relativeTo: .body)
+
+#if os(macOS)
+    static let editorFont: NSFont = NSFont(name: "SF Pro", size: editorSize)
+        ?? .systemFont(ofSize: editorSize)
+#elseif os(iOS)
+    static let editorFont: UIFont = {
+        let font = UIFont(name: "SF Pro", size: editorSize)
+            ?? .systemFont(ofSize: editorSize)
+        return UIFontMetrics(forTextStyle: .body).scaledFont(for: font)
+    }()
+#endif
+}
+
 struct StickyNoteEditor: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var store: StickyNotesStore
@@ -218,7 +236,7 @@ private struct MacStickyTextView: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = true
         textView.allowsUndo = true
         textView.drawsBackground = false
-        textView.font = .systemFont(ofSize: 18)
+        textView.font = StickyNoteTypography.editorFont
         textView.textColor = .black
         textView.insertionPointColor = .black
         textView.isHorizontallyResizable = false
@@ -314,7 +332,6 @@ private struct MacStickyTextView: NSViewRepresentable {
 }
 #elseif os(iOS)
 private final class CenteredStickyTextView: UITextView {
-    static let editorFont = UIFont.preferredFont(forTextStyle: .body)
     static let minimumVerticalInset: CGFloat = 18
     static let horizontalInset: CGFloat = 16
 
@@ -368,7 +385,7 @@ private struct IOSStickyTextView: UIViewRepresentable {
         let textView = CenteredStickyTextView()
         textView.delegate = context.coordinator
         textView.backgroundColor = .clear
-        textView.font = CenteredStickyTextView.editorFont
+        textView.font = StickyNoteTypography.editorFont
         textView.adjustsFontForContentSizeCategory = true
         textView.textColor = .black
         textView.text = text
