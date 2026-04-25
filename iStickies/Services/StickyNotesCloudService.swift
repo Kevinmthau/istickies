@@ -212,6 +212,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         }
 
         let restoredState = CloudKitSyncEngineStateRecovery.restore(from: stateSerializationData)
+        restoredFromPersistedSyncState = restoredState.restoredFromPersistedSyncState
         if restoredState.recoveredFromCorruptSerialization {
             stateSerializationData = nil
             didHydrateRemoteZoneSnapshot = false
@@ -771,6 +772,10 @@ struct CloudRemoteRecordMappingResult: Sendable {
 struct CloudKitSyncEngineStateRecoveryResult {
     var stateSerialization: CKSyncEngine.State.Serialization?
     var recoveredFromCorruptSerialization: Bool
+
+    var restoredFromPersistedSyncState: Bool {
+        stateSerialization != nil
+    }
 }
 
 enum CloudKitSyncEngineStateRecovery {

@@ -344,6 +344,7 @@ struct iStickiesTests {
 
         #expect(recovery.stateSerialization == nil)
         #expect(recovery.recoveredFromCorruptSerialization)
+        #expect(recovery.restoredFromPersistedSyncState == false)
     }
 
     @Test func cloudKitRecordIgnoresRemoteWindowState() throws {
