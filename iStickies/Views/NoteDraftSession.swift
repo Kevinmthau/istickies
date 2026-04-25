@@ -8,7 +8,7 @@ final class NoteDraftSession: ObservableObject {
     private var noteID: String?
     private var hasLoadedDraft = false
     private var hasPendingLocalChanges = false
-    private var isAwaitingEditorContentReplacement = false
+    private var awaitingEditorReplacementContent: String?
     private var draftBaseContent: String?
     private var readPersistedContent: @MainActor () -> String? = { nil }
     private var persistDraftContent: @MainActor (String, String) -> StickyNoteDraftPersistenceResult = { _, _ in .missing }
@@ -42,14 +42,16 @@ final class NoteDraftSession: ObservableObject {
 
     func handlePersistedContentChange(_ newValue: String) {
         if newValue == draftContent {
-            guard !isAwaitingEditorContentReplacement else { return }
+            guard awaitingEditorReplacementContent == nil else { return }
             hasPendingLocalChanges = false
             draftBaseContent = newValue
             return
         }
 
-        if isAwaitingEditorContentReplacement {
+        if let awaitingEditorReplacementContent {
+            guard draftContent == awaitingEditorReplacementContent else { return }
             draftContent = newValue
+            self.awaitingEditorReplacementContent = newValue
             hasLoadedDraft = true
             return
         }
@@ -58,7 +60,7 @@ final class NoteDraftSession: ObservableObject {
         draftContent = newValue
         draftBaseContent = newValue
         hasLoadedDraft = true
-        isAwaitingEditorContentReplacement = false
+        awaitingEditorReplacementContent = nil
     }
 
     func updateDraftContent(_ newValue: String) {
@@ -82,7 +84,7 @@ final class NoteDraftSession: ObservableObject {
         draftBaseContent = content
         hasLoadedDraft = true
         hasPendingLocalChanges = false
-        isAwaitingEditorContentReplacement = false
+        awaitingEditorReplacementContent = nil
     }
 
     private func schedulePersistence() {
@@ -104,14 +106,14 @@ final class NoteDraftSession: ObservableObject {
     private func persistDraftIfNeeded(_ content: String) {
         guard let persistedContent = readPersistedContent() else {
             hasPendingLocalChanges = false
-            isAwaitingEditorContentReplacement = false
+            awaitingEditorReplacementContent = nil
             draftBaseContent = nil
             return
         }
 
         guard persistedContent != content else {
             hasPendingLocalChanges = false
-            isAwaitingEditorContentReplacement = false
+            awaitingEditorReplacementContent = nil
             draftBaseContent = persistedContent
             return
         }
@@ -122,15 +124,15 @@ final class NoteDraftSession: ObservableObject {
             draftContent = primaryContent
             draftBaseContent = primaryContent
             hasPendingLocalChanges = false
-            isAwaitingEditorContentReplacement = false
+            awaitingEditorReplacementContent = nil
         case let .conflicted(primaryContent, _):
             draftContent = primaryContent
             draftBaseContent = expectedBaseContent
             hasPendingLocalChanges = content != primaryContent
-            isAwaitingEditorContentReplacement = hasPendingLocalChanges
+            awaitingEditorReplacementContent = hasPendingLocalChanges ? primaryContent : nil
         case .missing:
             hasPendingLocalChanges = false
-            isAwaitingEditorContentReplacement = false
+            awaitingEditorReplacementContent = nil
         }
     }
 
@@ -140,9 +142,13 @@ final class NoteDraftSession: ObservableObject {
         guard readPersistedContent() == content else { return false }
         saveTask?.cancel()
         saveTask = nil
+        if awaitingEditorReplacementContent != nil, draftContent != content {
+            persistDraftIfNeeded(draftContent)
+            guard readPersistedContent() == content else { return false }
+        }
         draftContent = content
         hasPendingLocalChanges = false
-        isAwaitingEditorContentReplacement = false
+        awaitingEditorReplacementContent = nil
         draftBaseContent = content
         return true
     }
@@ -152,7 +158,7 @@ final class NoteDraftSession: ObservableObject {
         saveTask = nil
         hasLoadedDraft = false
         hasPendingLocalChanges = false
-        isAwaitingEditorContentReplacement = false
+        awaitingEditorReplacementContent = nil
         draftBaseContent = nil
         draftContent = ""
     }

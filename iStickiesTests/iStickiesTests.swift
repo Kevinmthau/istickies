@@ -630,12 +630,13 @@ struct iStickiesTests {
         #expect(persistedContent == "Remote edit")
         #expect(conflictCopies == ["Local draft"])
 
-        session.handlePersistedContentChange("Remote edit")
         session.updateDraftContent("Local draft plus")
+        persistedContent = "Remote edit v2"
+        session.handlePersistedContentChange(persistedContent)
         session.flush()
 
         #expect(expectedBaseContents == ["Original", "Original"])
-        #expect(persistedContent == "Remote edit")
+        #expect(persistedContent == "Remote edit v2")
         #expect(conflictCopies == ["Local draft", "Local draft plus"])
     }
 
@@ -676,6 +677,46 @@ struct iStickiesTests {
         #expect(expectedBaseContents == ["Original", "Remote edit"])
         #expect(persistedContent == "Fresh local edit")
         #expect(conflictCopies == ["Local draft"])
+    }
+
+    @Test func conflictedDraftPersistsPostConflictEditBeforeClearingOnEditorReplacement() {
+        var persistedContent = "Original"
+        var expectedBaseContents: [String] = []
+        var conflictCopies: [String] = []
+        let session = NoteDraftSession(debounceInterval: .seconds(10))
+
+        session.configure(
+            noteID: "note",
+            initialContent: persistedContent,
+            readPersistedContent: { persistedContent },
+            persistDraftContent: { content, expectedBaseContent in
+                expectedBaseContents.append(expectedBaseContent)
+                guard persistedContent == expectedBaseContent else {
+                    conflictCopies.append(content)
+                    return .conflicted(
+                        primaryContent: persistedContent,
+                        conflictCopyID: "copy-\(conflictCopies.count)"
+                    )
+                }
+
+                persistedContent = content
+                return .persisted(primaryContent: persistedContent)
+            }
+        )
+
+        session.updateDraftContent("Local draft")
+        persistedContent = "Remote edit"
+        session.handlePersistedContentChange(persistedContent)
+        session.flush()
+
+        session.updateDraftContent("Local draft plus")
+        session.updateDraftContent("Remote edit")
+        session.flush()
+
+        #expect(expectedBaseContents == ["Original", "Original"])
+        #expect(persistedContent == "Remote edit")
+        #expect(session.draftContent == "Remote edit")
+        #expect(conflictCopies == ["Local draft", "Local draft plus"])
     }
 
     @Test func pendingDraftFlushCreatesConflictCopyWhenPersistedContentChanged() async throws {
