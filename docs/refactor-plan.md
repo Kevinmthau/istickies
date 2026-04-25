@@ -120,7 +120,7 @@ If persisted content changed since the draft base and differs from the draft, th
 - `CloudKitSendBatchTracker`: owns `ActiveSendContext`, saved/deleted/conflict/retry bookkeeping, and result finalization.
 - `CloudKitErrorClassifier`: maps CloudKit errors into retry, conflict, missing zone, partial failure, and terminal failure categories.
 
-Start by extracting record mapping and send-batch tracking because those require the least behavior change and can be covered with pure unit tests.
+Record mapping has been extracted into `StickyNoteRecordMapper`. Continue with send-batch tracking next because it requires little behavior change and can be covered with pure unit tests.
 
 **Expected payoff:** Smaller review surface, better tests, and safer changes to sync behavior.
 
@@ -345,7 +345,7 @@ Remaining follow-up: consider using stable CloudKit/version metadata instead of 
 
 Extract low-risk components from `StickyNotesCloudService.swift` without changing behavior:
 
-1. `StickyNoteRecordMapper`
+1. `StickyNoteRecordMapper` - complete.
 2. `CloudKitSendBatchTracker`
 3. `CloudKitErrorClassifier`
 
@@ -417,4 +417,4 @@ Only after correctness is improved, consider normalizing store state into `notes
 
 ## Best next implementation prompt
 
-Extract the next CloudKit pure seam: move sticky-note record mapping out of `StickyNotesCloudService.swift` into a focused mapper component, keep the existing malformed-record tests passing, and add any missing mapper tests needed to preserve current CloudKit field compatibility.
+Extract the next CloudKit pure seam: move `ActiveSendContext` and related saved/deleted/conflict/retry bookkeeping out of `StickyNotesCloudService.swift` into a focused `CloudKitSendBatchTracker`, keep sync behavior unchanged, and add pure unit tests for batch finalization and retry/conflict bookkeeping.

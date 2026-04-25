@@ -264,11 +264,11 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             didAttemptLegacyDefaultZoneImport: didAttemptLegacyDefaultZoneImport
         ) else { return [] }
 
-        let query = CKQuery(recordType: StickyNote.recordType, predicate: NSPredicate(value: true))
-        query.sortDescriptors = [NSSortDescriptor(key: StickyNoteRecordField.lastModified, ascending: false)]
+        let query = CKQuery(recordType: StickyNoteRecordMapper.recordType, predicate: NSPredicate(value: true))
+        query.sortDescriptors = [NSSortDescriptor(key: StickyNoteRecordMapper.lastModifiedSortKey, ascending: false)]
 
         let fetchedRecords = try await fetchRecords(query: query, zoneID: CKRecordZone.ID.default)
-        let mappedRecords = CloudRemoteSnapshotRecordMapper.map(
+        let mappedRecords = StickyNoteRecordMapper.map(
             records: fetchedRecords.records,
             expectedZoneID: CKRecordZone.ID.default
         )
@@ -296,12 +296,12 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     private func hydrateRemoteZoneSnapshotIfNeeded() async throws -> [String] {
         guard needsRemoteZoneSnapshotHydration else { return [] }
 
-        let query = CKQuery(recordType: StickyNote.recordType, predicate: NSPredicate(value: true))
-        query.sortDescriptors = [NSSortDescriptor(key: StickyNoteRecordField.lastModified, ascending: false)]
+        let query = CKQuery(recordType: StickyNoteRecordMapper.recordType, predicate: NSPredicate(value: true))
+        query.sortDescriptors = [NSSortDescriptor(key: StickyNoteRecordMapper.lastModifiedSortKey, ascending: false)]
 
         do {
             let fetchedRecords = try await fetchRecords(query: query, zoneID: StickyNotesCloudKitConfig.zoneID)
-            let mappedRecords = CloudRemoteSnapshotRecordMapper.map(
+            let mappedRecords = StickyNoteRecordMapper.map(
                 records: fetchedRecords.records,
                 expectedZoneID: StickyNotesCloudKitConfig.zoneID
             )
@@ -348,7 +348,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             return nil
         }
 
-        return note.makeRecord(zoneID: StickyNotesCloudKitConfig.zoneID)
+        return StickyNoteRecordMapper.record(for: note, zoneID: StickyNotesCloudKitConfig.zoneID)
     }
 
     private func finalizeActiveSendContext() -> CloudSyncBatchResult {
@@ -483,7 +483,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                 continue
             }
 
-            guard let note = StickyNote(record: record) else {
+            guard let note = StickyNoteRecordMapper.note(from: record) else {
                 remoteSnapshotIssueMessages.append("A CloudKit record could not be decoded.")
                 didHydrateRemoteZoneSnapshot = false
                 needsRemoteZoneSnapshotHydration = true
@@ -495,7 +495,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
 
         for deletion in event.deletions
         where deletion.recordID.zoneID == StickyNotesCloudKitConfig.zoneID
-            && deletion.recordType == StickyNote.recordType
+            && deletion.recordType == StickyNoteRecordMapper.recordType
         {
             remoteNotesByID.removeValue(forKey: deletion.recordID.recordName)
         }
@@ -532,7 +532,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     ) {
         for record in event.savedRecords {
             guard record.recordID.zoneID == StickyNotesCloudKitConfig.zoneID,
-                  let note = StickyNote(record: record)
+                  let note = StickyNoteRecordMapper.note(from: record)
             else {
                 continue
             }
@@ -563,7 +563,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                 pendingNotesByID.removeValue(forKey: noteID)
 
                 if let serverRecord = failedRecordSave.error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord,
-                   let remoteNote = StickyNote(record: serverRecord)
+                   let remoteNote = StickyNoteRecordMapper.note(from: serverRecord)
                 {
                     let cleanRemoteNote = remoteNote.markedClean()
                     remoteNotesByID[noteID] = cleanRemoteNote
@@ -767,11 +767,6 @@ private struct CloudFetchedRecords {
     var partialFailureMessages: [String]
 }
 
-struct CloudRemoteRecordMappingResult: Sendable {
-    var notesByID: [String: StickyNote]
-    var issueMessages: [String]
-}
-
 struct CloudKitSyncEngineStateRecoveryResult {
     var stateSerialization: CKSyncEngine.State.Serialization?
     var hadPersistedSyncStateSerialization: Bool
@@ -821,142 +816,6 @@ enum CloudKitLegacyDefaultZoneImportPolicy {
     }
 }
 
-enum CloudRemoteSnapshotRecordMapper {
-    static func map(
-        records: [CKRecord],
-        expectedZoneID: CKRecordZone.ID?
-    ) -> CloudRemoteRecordMappingResult {
-        var notesByID: [String: StickyNote] = [:]
-        var skippedRecordCount = 0
-
-        for record in records {
-            if let expectedZoneID, record.recordID.zoneID != expectedZoneID {
-                continue
-            }
-
-            guard record.recordType == StickyNote.recordType else {
-                continue
-            }
-
-            guard let note = StickyNote(record: record) else {
-                skippedRecordCount += 1
-                continue
-            }
-
-            notesByID[note.id] = note.markedClean()
-        }
-
-        let issueMessages = skippedRecordCount == 0
-            ? []
-            : ["\(skippedRecordCount) CloudKit record(s) could not be decoded."]
-        return CloudRemoteRecordMappingResult(notesByID: notesByID, issueMessages: issueMessages)
-    }
-}
-
-private enum StickyNoteRecordField {
-    static let content = "content"
-    static let titleOverride = "titleOverride"
-    static let color = "color"
-    static let createdAt = "createdAt"
-    static let lastModified = "lastModified"
-    static let isOpen = "isOpen"
-    static let frameX = "frameX"
-    static let frameY = "frameY"
-    static let frameWidth = "frameWidth"
-    static let frameHeight = "frameHeight"
-}
-
-extension StickyNote {
-    static let recordType = "StickyNote"
-
-    init?(record: CKRecord) {
-        guard record.recordType == StickyNote.recordType,
-              let content = record[StickyNoteRecordField.content] as? String,
-              let lastModified = record[StickyNoteRecordField.lastModified] as? Date
-        else {
-            return nil
-        }
-
-        // Fall back to server metadata when the deployed schema is missing `createdAt`.
-        let createdAt =
-            (record[StickyNoteRecordField.createdAt] as? Date)
-            ?? record.creationDate
-            ?? lastModified
-
-        let color: StickyNoteColor
-        if let colorRawValue = record[StickyNoteRecordField.color] as? String,
-           let decodedColor = StickyNoteColor(rawValue: colorRawValue)
-        {
-            color = decodedColor
-        } else {
-            color = .yellow
-        }
-
-        self.init(
-            id: record.recordID.recordName,
-            content: content,
-            titleOverride: record[StickyNoteRecordField.titleOverride] as? String,
-            color: color,
-            createdAt: createdAt,
-            lastModified: lastModified,
-            isOpen: true,
-            preferredFrame: nil,
-            needsCloudUpload: false,
-            cloudKitSystemFieldsData: record.encodedSystemFieldsData()
-        )
-    }
-
-    func makeRecord(zoneID: CKRecordZone.ID) -> CKRecord {
-        let expectedRecordID = CKRecord.ID(recordName: id, zoneID: zoneID)
-        let record =
-            restoredRecord(expectedRecordID: expectedRecordID)
-            ?? CKRecord(recordType: StickyNote.recordType, recordID: expectedRecordID)
-
-        write(to: record)
-        return record
-    }
-
-    func write(to record: CKRecord) {
-        record[StickyNoteRecordField.content] = content as CKRecordValue
-        if let titleOverride, !titleOverride.isEmpty {
-            record[StickyNoteRecordField.titleOverride] = titleOverride as CKRecordValue
-        } else {
-            record[StickyNoteRecordField.titleOverride] = nil
-        }
-        // Keep writes compatible with the deployed production schema. Shared CloudKit records
-        // only store note content metadata; window visibility and frame are local device state.
-        record[StickyNoteRecordField.color] = nil
-        record[StickyNoteRecordField.createdAt] = nil
-        record[StickyNoteRecordField.lastModified] = lastModified as CKRecordValue
-        record[StickyNoteRecordField.isOpen] = nil
-        record[StickyNoteRecordField.frameX] = nil
-        record[StickyNoteRecordField.frameY] = nil
-        record[StickyNoteRecordField.frameWidth] = nil
-        record[StickyNoteRecordField.frameHeight] = nil
-    }
-
-    private func restoredRecord(expectedRecordID: CKRecord.ID) -> CKRecord? {
-        guard let cloudKitSystemFieldsData else { return nil }
-
-        do {
-            let unarchiver = try NSKeyedUnarchiver(forReadingFrom: cloudKitSystemFieldsData)
-            unarchiver.requiresSecureCoding = true
-            defer { unarchiver.finishDecoding() }
-
-            guard let record = CKRecord(coder: unarchiver),
-                  record.recordID == expectedRecordID,
-                  record.recordType == StickyNote.recordType
-            else {
-                return nil
-            }
-
-            return record
-        } catch {
-            return nil
-        }
-    }
-}
-
 private extension CKSyncEngine.PendingRecordZoneChange {
     var recordID: CKRecord.ID {
         switch self {
@@ -965,14 +824,5 @@ private extension CKSyncEngine.PendingRecordZoneChange {
         @unknown default:
             fatalError("Unhandled CKSyncEngine.PendingRecordZoneChange case")
         }
-    }
-}
-
-private extension CKRecord {
-    func encodedSystemFieldsData() -> Data? {
-        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
-        encodeSystemFields(with: archiver)
-        archiver.finishEncoding()
-        return archiver.encodedData
     }
 }

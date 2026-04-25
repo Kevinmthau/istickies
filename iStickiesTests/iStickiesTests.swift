@@ -290,12 +290,12 @@ struct iStickiesTests {
 
     @Test func cloudKitRecordWithoutColorDefaultsToYellow() throws {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
-        let record = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        let record = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
         record["content"] = "Remote note" as CKRecordValue
         record["createdAt"] = Date(timeIntervalSince1970: 10) as CKRecordValue
         record["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
 
-        let note = try #require(StickyNote(record: record))
+        let note = try #require(StickyNoteRecordMapper.note(from: record))
 
         #expect(note.id == "remote-note")
         #expect(note.content == "Remote note")
@@ -305,12 +305,12 @@ struct iStickiesTests {
 
     @Test func cloudKitRecordWithoutCreatedAtFallsBackToLastModified() throws {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
-        let record = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        let record = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
         let lastModified = Date(timeIntervalSince1970: 20)
         record["content"] = "Remote note" as CKRecordValue
         record["lastModified"] = lastModified as CKRecordValue
 
-        let note = try #require(StickyNote(record: record))
+        let note = try #require(StickyNoteRecordMapper.note(from: record))
 
         #expect(note.id == "remote-note")
         #expect(note.createdAt == lastModified)
@@ -319,15 +319,15 @@ struct iStickiesTests {
 
     @Test func malformedCloudKitRecordMakesMappedSnapshotPartial() throws {
         let validRecordID = CKRecord.ID(recordName: "valid-note", zoneID: .default)
-        let validRecord = CKRecord(recordType: StickyNote.recordType, recordID: validRecordID)
+        let validRecord = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: validRecordID)
         validRecord["content"] = "Remote note" as CKRecordValue
         validRecord["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
 
         let malformedRecordID = CKRecord.ID(recordName: "malformed-note", zoneID: .default)
-        let malformedRecord = CKRecord(recordType: StickyNote.recordType, recordID: malformedRecordID)
+        let malformedRecord = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: malformedRecordID)
         malformedRecord["content"] = "Missing last modified" as CKRecordValue
 
-        let mapping = CloudRemoteSnapshotRecordMapper.map(
+        let mapping = StickyNoteRecordMapper.map(
             records: [validRecord, malformedRecord],
             expectedZoneID: .default
         )
@@ -335,6 +335,37 @@ struct iStickiesTests {
         #expect(mapping.notesByID[validRecordID.recordName]?.content == "Remote note")
         #expect(mapping.notesByID[malformedRecordID.recordName] == nil)
         #expect(mapping.issueMessages == ["1 CloudKit record(s) could not be decoded."])
+    }
+
+    @Test func stickyNoteRecordMapperIgnoresUnexpectedTypesAndZones() throws {
+        let expectedZoneID = CKRecordZone.ID(zoneName: "expected")
+        let otherZoneID = CKRecordZone.ID(zoneName: "other")
+        let validRecordID = CKRecord.ID(recordName: "valid-note", zoneID: expectedZoneID)
+        let validRecord = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: validRecordID)
+        validRecord["content"] = "Remote note" as CKRecordValue
+        validRecord["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
+
+        let otherTypeRecord = CKRecord(
+            recordType: "OtherRecord",
+            recordID: CKRecord.ID(recordName: "other-type", zoneID: expectedZoneID)
+        )
+        otherTypeRecord["content"] = "Ignored" as CKRecordValue
+        otherTypeRecord["lastModified"] = Date(timeIntervalSince1970: 30) as CKRecordValue
+
+        let otherZoneRecord = CKRecord(
+            recordType: StickyNoteRecordMapper.recordType,
+            recordID: CKRecord.ID(recordName: "other-zone", zoneID: otherZoneID)
+        )
+        otherZoneRecord["content"] = "Ignored" as CKRecordValue
+        otherZoneRecord["lastModified"] = Date(timeIntervalSince1970: 40) as CKRecordValue
+
+        let mapping = StickyNoteRecordMapper.map(
+            records: [validRecord, otherTypeRecord, otherZoneRecord],
+            expectedZoneID: expectedZoneID
+        )
+
+        #expect(Array(mapping.notesByID.keys) == [validRecordID.recordName])
+        #expect(mapping.issueMessages.isEmpty)
     }
 
     @Test func corruptCloudKitStateSerializationRecoversWithFreshEngineState() {
@@ -365,7 +396,7 @@ struct iStickiesTests {
 
     @Test func cloudKitRecordIgnoresRemoteWindowState() throws {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
-        let record = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        let record = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
         record["content"] = "Remote note" as CKRecordValue
         record["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
         record["isOpen"] = NSNumber(value: false)
@@ -374,7 +405,7 @@ struct iStickiesTests {
         record["frameWidth"] = NSNumber(value: 280)
         record["frameHeight"] = NSNumber(value: 300)
 
-        let note = try #require(StickyNote(record: record))
+        let note = try #require(StickyNoteRecordMapper.note(from: record))
 
         #expect(note.isOpen == true)
         #expect(note.preferredFrame == nil)
@@ -382,7 +413,7 @@ struct iStickiesTests {
 
     @Test func cloudKitRecordWriteOmitsColorFieldFromRestoredRecords() {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
-        let archivedRecord = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        let archivedRecord = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
         archivedRecord["content"] = "Original" as CKRecordValue
         archivedRecord["color"] = StickyNoteColor.blue.rawValue as CKRecordValue
         archivedRecord["createdAt"] = Date(timeIntervalSince1970: 10) as CKRecordValue
@@ -404,7 +435,7 @@ struct iStickiesTests {
             cloudKitSystemFieldsData: archiver.encodedData
         )
 
-        let record = note.makeRecord(zoneID: .default)
+        let record = StickyNoteRecordMapper.record(for: note, zoneID: .default)
         let color = record["color"] as? String
 
         #expect(color == nil)
@@ -414,7 +445,7 @@ struct iStickiesTests {
 
     @Test func cloudKitRecordWriteOmitsCreatedAtFieldFromRestoredRecords() {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
-        let archivedRecord = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        let archivedRecord = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
         archivedRecord["content"] = "Original" as CKRecordValue
         archivedRecord["createdAt"] = Date(timeIntervalSince1970: 10) as CKRecordValue
         archivedRecord["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
@@ -435,7 +466,7 @@ struct iStickiesTests {
             cloudKitSystemFieldsData: archiver.encodedData
         )
 
-        let record = note.makeRecord(zoneID: .default)
+        let record = StickyNoteRecordMapper.record(for: note, zoneID: .default)
         let createdAt = record["createdAt"] as? Date
 
         #expect(createdAt == nil)
@@ -445,7 +476,7 @@ struct iStickiesTests {
 
     @Test func cloudKitRecordWriteOmitsLocalWindowStateFieldsFromRestoredRecords() {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
-        let archivedRecord = CKRecord(recordType: StickyNote.recordType, recordID: recordID)
+        let archivedRecord = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
         archivedRecord["content"] = "Original" as CKRecordValue
         archivedRecord["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
         archivedRecord["isOpen"] = NSNumber(value: true)
@@ -470,7 +501,7 @@ struct iStickiesTests {
             cloudKitSystemFieldsData: archiver.encodedData
         )
 
-        let record = note.makeRecord(zoneID: .default)
+        let record = StickyNoteRecordMapper.record(for: note, zoneID: .default)
 
         #expect(record["isOpen"] == nil)
         #expect(record["frameX"] == nil)
