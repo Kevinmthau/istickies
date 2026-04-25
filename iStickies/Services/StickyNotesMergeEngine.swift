@@ -27,7 +27,8 @@ enum StickyNotesMergeEngine {
     static func merge(
         localNotes: [StickyNote],
         remoteNotes: [StickyNote],
-        pendingDeletionIDs: Set<String>
+        pendingDeletionIDs: Set<String>,
+        remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness = .complete
     ) -> StickyNotesMergeOutcome {
         var unmatchedLocal = Dictionary(uniqueKeysWithValues: localNotes.map { ($0.id, $0) })
         var mergedNotes: [StickyNote] = []
@@ -61,7 +62,9 @@ enum StickyNotesMergeEngine {
             }
         }
 
-        for remainingLocalNote in unmatchedLocal.values where remainingLocalNote.needsCloudUpload {
+        for remainingLocalNote in unmatchedLocal.values
+        where remainingLocalNote.needsCloudUpload || !remoteSnapshotCompleteness.allowsRemoteDeletions
+        {
             mergedNotes.append(remainingLocalNote)
         }
 

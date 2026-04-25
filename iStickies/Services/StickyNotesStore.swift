@@ -180,11 +180,12 @@ final class StickyNotesStore: ObservableObject {
         syncState = .syncing
 
         do {
-            let remoteNotes = try await cloudService.fetchAllNotes()
+            let remoteSnapshot = try await cloudService.fetchAllNotes()
             let mergeOutcome = StickyNotesMergeEngine.merge(
                 localNotes: notes,
-                remoteNotes: remoteNotes,
-                pendingDeletionIDs: pendingDeletionIDs
+                remoteNotes: remoteSnapshot.notes,
+                pendingDeletionIDs: pendingDeletionIDs,
+                remoteSnapshotCompleteness: remoteSnapshot.completeness
             )
             let mergedNotes = enforceYellowNotes(mergeOutcome.notes)
             if mergedNotes != notes {
@@ -208,6 +209,9 @@ final class StickyNotesStore: ObservableObject {
             pendingDeletionIDs = syncOutcome.pendingDeletionIDs
 
             if let failureMessage = syncResult.failureMessage {
+                throw StickyNotesCloudSyncError(message: failureMessage)
+            }
+            if let failureMessage = remoteSnapshot.completeness.failureMessage {
                 throw StickyNotesCloudSyncError(message: failureMessage)
             }
 

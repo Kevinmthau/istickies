@@ -17,10 +17,38 @@ struct CloudSyncBatchResult: Sendable {
     var failureMessage: String?
 }
 
+struct CloudRemoteSnapshot: Sendable, Equatable {
+    var notes: [StickyNote]
+    var completeness: CloudRemoteSnapshotCompleteness
+
+    static func complete(notes: [StickyNote]) -> CloudRemoteSnapshot {
+        CloudRemoteSnapshot(notes: notes, completeness: .complete)
+    }
+}
+
+enum CloudRemoteSnapshotCompleteness: Sendable, Equatable {
+    case complete
+    case unavailable(String)
+    case partial(String)
+
+    var allowsRemoteDeletions: Bool {
+        self == .complete
+    }
+
+    var failureMessage: String? {
+        switch self {
+        case .complete:
+            return nil
+        case let .partial(message), let .unavailable(message):
+            return message
+        }
+    }
+}
+
 protocol StickyNotesCloudSyncing: Sendable {
     func restore(stateSerializationData: Data?) async
     func currentStateSerializationData() async -> Data?
-    func fetchAllNotes() async throws -> [StickyNote]
+    func fetchAllNotes() async throws -> CloudRemoteSnapshot
     func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult
 }
 
@@ -65,8 +93,11 @@ actor DisabledStickyNotesCloudService: StickyNotesCloudSyncing {
         nil
     }
 
-    func fetchAllNotes() async throws -> [StickyNote] {
-        []
+    func fetchAllNotes() async throws -> CloudRemoteSnapshot {
+        CloudRemoteSnapshot(
+            notes: [],
+            completeness: .unavailable("CloudKit is unavailable.")
+        )
     }
 
     func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {
@@ -86,7 +117,9 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     private var zoneExistsRemotely = false
     private var restoredFromPersistedSyncState = false
     private var didHydrateRemoteZoneSnapshot = false
+    private var needsRemoteZoneSnapshotHydration = false
     private var didAttemptLegacyDefaultZoneImport = false
+    private var remoteSnapshotIssueMessages: [String] = []
 
     init(container: CKContainer = CloudKitStickyNotesCloudService.defaultContainer()) {
         database = container.privateCloudDatabase
@@ -105,18 +138,31 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         self.stateSerializationData = stateSerializationData
         restoredFromPersistedSyncState = stateSerializationData != nil
         didHydrateRemoteZoneSnapshot = false
+        needsRemoteZoneSnapshotHydration = stateSerializationData != nil
     }
 
     func currentStateSerializationData() async -> Data? {
         stateSerializationData
     }
 
-    func fetchAllNotes() async throws -> [StickyNote] {
+    func fetchAllNotes() async throws -> CloudRemoteSnapshot {
         let syncEngine = try await ensureSyncEngine()
-        try await syncEngine.fetchChanges()
-        try await hydrateRemoteZoneSnapshotIfNeeded()
-        try await importLegacyDefaultZoneNotesIfNeeded(syncEngine: syncEngine)
-        return Array(remoteNotesByID.values).map { $0.markedClean() }
+        remoteSnapshotIssueMessages.removeAll()
+
+        do {
+            try await syncEngine.fetchChanges()
+        } catch {
+            return remoteSnapshot(completeness: .unavailable(error.localizedDescription))
+        }
+
+        var issueMessages = remoteSnapshotIssueMessages
+        remoteSnapshotIssueMessages.removeAll()
+        issueMessages.append(contentsOf: try await hydrateRemoteZoneSnapshotIfNeeded())
+        issueMessages.append(contentsOf: try await importLegacyDefaultZoneNotesIfNeeded(syncEngine: syncEngine))
+
+        let completeness: CloudRemoteSnapshotCompleteness =
+            issueMessages.isEmpty ? .complete : .partial(Self.issueSummary(issueMessages))
+        return remoteSnapshot(completeness: completeness)
     }
 
     func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {
@@ -214,23 +260,22 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         )
     }
 
-    private func importLegacyDefaultZoneNotesIfNeeded(syncEngine: CKSyncEngine) async throws {
-        guard !restoredFromPersistedSyncState, !didAttemptLegacyDefaultZoneImport else { return }
-        didAttemptLegacyDefaultZoneImport = true
+    private func importLegacyDefaultZoneNotesIfNeeded(syncEngine: CKSyncEngine) async throws -> [String] {
+        guard !restoredFromPersistedSyncState, !didAttemptLegacyDefaultZoneImport else { return [] }
 
         let query = CKQuery(recordType: StickyNote.recordType, predicate: NSPredicate(value: true))
         query.sortDescriptors = [NSSortDescriptor(key: StickyNoteRecordField.lastModified, ascending: false)]
 
-        let legacyRecords = try await fetchRecords(query: query, zoneID: CKRecordZone.ID.default)
+        let fetchedRecords = try await fetchRecords(query: query, zoneID: CKRecordZone.ID.default)
+        let mappedRecords = CloudRemoteSnapshotRecordMapper.map(
+            records: fetchedRecords.records,
+            expectedZoneID: CKRecordZone.ID.default
+        )
+        let issueMessages = fetchedRecords.partialFailureMessages + mappedRecords.issueMessages
+        didAttemptLegacyDefaultZoneImport = issueMessages.isEmpty
         var importedNoteIDs: [String] = []
 
-        for record in legacyRecords {
-            guard record.recordID.zoneID == CKRecordZone.ID.default,
-                  let note = StickyNote(record: record),
-                  remoteNotesByID[note.id] == nil
-            else {
-                continue
-            }
+        for note in mappedRecords.notesByID.values where remoteNotesByID[note.id] == nil {
 
             let importedNote = note.markedClean()
             remoteNotesByID[note.id] = importedNote
@@ -238,36 +283,40 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             importedNoteIDs.append(note.id)
         }
 
-        guard !importedNoteIDs.isEmpty else { return }
+        guard !importedNoteIDs.isEmpty else { return issueMessages }
 
         try await ensureZoneExistsForWrites(syncEngine: syncEngine)
         syncEngine.state.add(
             pendingRecordZoneChanges: importedNoteIDs.map { .saveRecord(recordID(for: $0)) }
         )
+        return issueMessages
     }
 
-    private func hydrateRemoteZoneSnapshotIfNeeded() async throws {
-        guard restoredFromPersistedSyncState, !didHydrateRemoteZoneSnapshot else { return }
+    private func hydrateRemoteZoneSnapshotIfNeeded() async throws -> [String] {
+        guard needsRemoteZoneSnapshotHydration else { return [] }
 
         let query = CKQuery(recordType: StickyNote.recordType, predicate: NSPredicate(value: true))
         query.sortDescriptors = [NSSortDescriptor(key: StickyNoteRecordField.lastModified, ascending: false)]
 
         do {
-            let records = try await fetchRecords(query: query, zoneID: StickyNotesCloudKitConfig.zoneID)
-            var hydratedNotesByID: [String: StickyNote] = [:]
-
-            for record in records {
-                guard let note = StickyNote(record: record) else { continue }
-                hydratedNotesByID[note.id] = note.markedClean()
-            }
+            let fetchedRecords = try await fetchRecords(query: query, zoneID: StickyNotesCloudKitConfig.zoneID)
+            let mappedRecords = CloudRemoteSnapshotRecordMapper.map(
+                records: fetchedRecords.records,
+                expectedZoneID: StickyNotesCloudKitConfig.zoneID
+            )
+            let issueMessages = fetchedRecords.partialFailureMessages + mappedRecords.issueMessages
+            let hydratedNotesByID = mappedRecords.notesByID.mapValues { $0.markedClean() }
 
             remoteNotesByID = hydratedNotesByID
             didResolveZoneExistence = true
             zoneExistsRemotely = true
-            didHydrateRemoteZoneSnapshot = true
+            didHydrateRemoteZoneSnapshot = issueMessages.isEmpty
+            needsRemoteZoneSnapshotHydration = !issueMessages.isEmpty
+            return issueMessages
         } catch {
             guard isMissingZoneError(error) else {
                 didHydrateRemoteZoneSnapshot = false
+                needsRemoteZoneSnapshotHydration = true
                 throw error
             }
 
@@ -275,7 +324,16 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             didResolveZoneExistence = true
             zoneExistsRemotely = false
             didHydrateRemoteZoneSnapshot = true
+            needsRemoteZoneSnapshotHydration = false
+            return []
         }
+    }
+
+    private func remoteSnapshot(completeness: CloudRemoteSnapshotCompleteness) -> CloudRemoteSnapshot {
+        CloudRemoteSnapshot(
+            notes: Array(remoteNotesByID.values).map { $0.markedClean() },
+            completeness: completeness
+        )
     }
 
     private func recordID(for noteID: String) -> CKRecord.ID {
@@ -412,6 +470,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             didResolveZoneExistence = true
             zoneExistsRemotely = false
             didHydrateRemoteZoneSnapshot = false
+            needsRemoteZoneSnapshotHydration = false
             remoteNotesByID.removeAll()
         }
     }
@@ -419,9 +478,14 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     private func applyFetchedRecordZoneChanges(_ event: CKSyncEngine.Event.FetchedRecordZoneChanges) {
         for modification in event.modifications {
             let record = modification.record
-            guard record.recordID.zoneID == StickyNotesCloudKitConfig.zoneID,
-                  let note = StickyNote(record: record)
-            else {
+            guard record.recordID.zoneID == StickyNotesCloudKitConfig.zoneID else {
+                continue
+            }
+
+            guard let note = StickyNote(record: record) else {
+                remoteSnapshotIssueMessages.append("A CloudKit record could not be decoded.")
+                didHydrateRemoteZoneSnapshot = false
+                needsRemoteZoneSnapshotHydration = true
                 continue
             }
 
@@ -452,6 +516,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             didResolveZoneExistence = true
             zoneExistsRemotely = false
             didHydrateRemoteZoneSnapshot = false
+            needsRemoteZoneSnapshotHydration = false
             remoteNotesByID.removeAll()
         }
 
@@ -551,9 +616,10 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         return ckError.code == .zoneNotFound || ckError.code == .userDeletedZone
     }
 
-    private func fetchRecords(query: CKQuery, zoneID: CKRecordZone.ID?) async throws -> [CKRecord] {
+    private func fetchRecords(query: CKQuery, zoneID: CKRecordZone.ID?) async throws -> CloudFetchedRecords {
         try await withCheckedThrowingContinuation { continuation in
             var collectedRecords: [CKRecord] = []
+            var partialFailureMessages: [String] = []
 
             func run(cursor: CKQueryOperation.Cursor?) {
                 let operation: CKQueryOperation
@@ -566,8 +632,11 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
 
                 operation.resultsLimit = CKQueryOperation.maximumResults
                 operation.recordMatchedBlock = { _, result in
-                    if case let .success(record) = result {
+                    switch result {
+                    case let .success(record):
                         collectedRecords.append(record)
+                    case let .failure(error):
+                        partialFailureMessages.append(error.localizedDescription)
                     }
                 }
                 operation.queryResultBlock = { result in
@@ -576,7 +645,12 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                         if let nextCursor {
                             run(cursor: nextCursor)
                         } else {
-                            continuation.resume(returning: collectedRecords)
+                            continuation.resume(
+                                returning: CloudFetchedRecords(
+                                    records: collectedRecords,
+                                    partialFailureMessages: partialFailureMessages
+                                )
+                            )
                         }
                     case let .failure(error):
                         continuation.resume(throwing: error)
@@ -588,6 +662,10 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
 
             run(cursor: nil)
         }
+    }
+
+    private static func issueSummary(_ issueMessages: [String]) -> String {
+        Array(Set(issueMessages)).sorted().joined(separator: " ")
     }
 }
 
@@ -603,18 +681,21 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
                 didResolveZoneExistence = false
                 zoneExistsRemotely = false
                 didHydrateRemoteZoneSnapshot = false
+                needsRemoteZoneSnapshotHydration = true
             case .signOut, .switchAccounts:
                 remoteNotesByID.removeAll()
                 pendingNotesByID.removeAll()
                 didResolveZoneExistence = false
                 zoneExistsRemotely = false
                 didHydrateRemoteZoneSnapshot = false
+                needsRemoteZoneSnapshotHydration = true
             @unknown default:
                 remoteNotesByID.removeAll()
                 pendingNotesByID.removeAll()
                 didResolveZoneExistence = false
                 zoneExistsRemotely = false
                 didHydrateRemoteZoneSnapshot = false
+                needsRemoteZoneSnapshotHydration = true
             }
         case let .fetchedDatabaseChanges(fetchedDatabaseChanges):
             applyFetchedDatabaseChanges(fetchedDatabaseChanges)
@@ -677,6 +758,48 @@ private struct ActiveSendContext {
         self.expectedDeleteNoteIDs = expectedDeleteNoteIDs
         unresolvedSaveNoteIDs = expectedSaveNoteIDs
         unresolvedDeleteNoteIDs = expectedDeleteNoteIDs
+    }
+}
+
+private struct CloudFetchedRecords {
+    var records: [CKRecord]
+    var partialFailureMessages: [String]
+}
+
+struct CloudRemoteRecordMappingResult: Sendable {
+    var notesByID: [String: StickyNote]
+    var issueMessages: [String]
+}
+
+enum CloudRemoteSnapshotRecordMapper {
+    static func map(
+        records: [CKRecord],
+        expectedZoneID: CKRecordZone.ID?
+    ) -> CloudRemoteRecordMappingResult {
+        var notesByID: [String: StickyNote] = [:]
+        var skippedRecordCount = 0
+
+        for record in records {
+            if let expectedZoneID, record.recordID.zoneID != expectedZoneID {
+                continue
+            }
+
+            guard record.recordType == StickyNote.recordType else {
+                continue
+            }
+
+            guard let note = StickyNote(record: record) else {
+                skippedRecordCount += 1
+                continue
+            }
+
+            notesByID[note.id] = note.markedClean()
+        }
+
+        let issueMessages = skippedRecordCount == 0
+            ? []
+            : ["\(skippedRecordCount) CloudKit record(s) could not be decoded."]
+        return CloudRemoteRecordMappingResult(notesByID: notesByID, issueMessages: issueMessages)
     }
 }
 

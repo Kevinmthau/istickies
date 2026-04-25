@@ -9,6 +9,14 @@ Repo-specific guidance for agents working in `iStickies`.
 - `iStickies/Views/NoteEditorView.swift` contains the shared editor plus the AppKit-backed macOS text view bridge.
 - `iStickiesTests/iStickiesTests.swift` contains the key unit tests for store behavior and macOS frame-sync logic.
 
+## Refactor plan
+
+Before starting any refactor, read:
+
+- `docs/refactor-plan.md`
+
+Treat it as the current prioritized roadmap. Prefer implementing one scoped item at a time, starting with the P0 sync safety fix. When making changes, keep the plan updated if priorities, findings, or implementation status change.
+
 ## macOS pitfalls
 
 - Do not immediately reapply model frames while the user is actively dragging a sticky window.
