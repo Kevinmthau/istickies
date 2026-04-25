@@ -348,6 +348,7 @@ private struct MacStickyTextView: NSViewRepresentable {
             )
             isApplyingProgrammaticUpdate = false
             pendingProgrammaticText = nil
+            text = newText
             if let scrollView = textView.enclosingScrollView {
                 MacStickyTextView.updateStickyTextInsets(in: scrollView, textView: textView)
             }
@@ -514,6 +515,7 @@ private struct IOSStickyTextView: UIViewRepresentable {
             (textView as? CenteredStickyTextView)?.updateStickyTextInsets()
             isApplyingProgrammaticUpdate = false
             pendingProgrammaticText = nil
+            text = newText
         }
 
         private func applyPendingProgrammaticTextIfNeeded(to textView: UITextView) {

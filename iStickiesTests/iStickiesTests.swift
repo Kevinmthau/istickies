@@ -595,6 +595,89 @@ struct iStickiesTests {
         #expect(session.draftContent == "Remote edit")
     }
 
+    @Test func conflictedDraftKeepsOriginalBaseUntilEditorTextIsReplaced() {
+        var persistedContent = "Original"
+        var expectedBaseContents: [String] = []
+        var conflictCopies: [String] = []
+        let session = NoteDraftSession(debounceInterval: .seconds(10))
+
+        session.configure(
+            noteID: "note",
+            initialContent: persistedContent,
+            readPersistedContent: { persistedContent },
+            persistDraftContent: { content, expectedBaseContent in
+                expectedBaseContents.append(expectedBaseContent)
+                guard persistedContent == expectedBaseContent else {
+                    conflictCopies.append(content)
+                    return .conflicted(
+                        primaryContent: persistedContent,
+                        conflictCopyID: "copy-\(conflictCopies.count)"
+                    )
+                }
+
+                persistedContent = content
+                return .persisted(primaryContent: persistedContent)
+            }
+        )
+
+        session.updateDraftContent("Local draft")
+        persistedContent = "Remote edit"
+        session.handlePersistedContentChange(persistedContent)
+
+        session.flush()
+
+        #expect(session.draftContent == "Remote edit")
+        #expect(persistedContent == "Remote edit")
+        #expect(conflictCopies == ["Local draft"])
+
+        session.handlePersistedContentChange("Remote edit")
+        session.updateDraftContent("Local draft plus")
+        session.flush()
+
+        #expect(expectedBaseContents == ["Original", "Original"])
+        #expect(persistedContent == "Remote edit")
+        #expect(conflictCopies == ["Local draft", "Local draft plus"])
+    }
+
+    @Test func conflictedDraftClearsWhenEditorAppliesPrimaryContent() {
+        var persistedContent = "Original"
+        var expectedBaseContents: [String] = []
+        var conflictCopies: [String] = []
+        let session = NoteDraftSession(debounceInterval: .seconds(10))
+
+        session.configure(
+            noteID: "note",
+            initialContent: persistedContent,
+            readPersistedContent: { persistedContent },
+            persistDraftContent: { content, expectedBaseContent in
+                expectedBaseContents.append(expectedBaseContent)
+                guard persistedContent == expectedBaseContent else {
+                    conflictCopies.append(content)
+                    return .conflicted(
+                        primaryContent: persistedContent,
+                        conflictCopyID: "copy-\(conflictCopies.count)"
+                    )
+                }
+
+                persistedContent = content
+                return .persisted(primaryContent: persistedContent)
+            }
+        )
+
+        session.updateDraftContent("Local draft")
+        persistedContent = "Remote edit"
+        session.handlePersistedContentChange(persistedContent)
+        session.flush()
+
+        session.updateDraftContent("Remote edit")
+        session.updateDraftContent("Fresh local edit")
+        session.flush()
+
+        #expect(expectedBaseContents == ["Original", "Remote edit"])
+        #expect(persistedContent == "Fresh local edit")
+        #expect(conflictCopies == ["Local draft"])
+    }
+
     @Test func pendingDraftFlushCreatesConflictCopyWhenPersistedContentChanged() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let sharedID = "shared-note"

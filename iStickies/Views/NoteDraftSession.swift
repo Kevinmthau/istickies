@@ -8,6 +8,7 @@ final class NoteDraftSession: ObservableObject {
     private var noteID: String?
     private var hasLoadedDraft = false
     private var hasPendingLocalChanges = false
+    private var isAwaitingEditorContentReplacement = false
     private var draftBaseContent: String?
     private var readPersistedContent: @MainActor () -> String? = { nil }
     private var persistDraftContent: @MainActor (String, String) -> StickyNoteDraftPersistenceResult = { _, _ in .missing }
@@ -41,8 +42,15 @@ final class NoteDraftSession: ObservableObject {
 
     func handlePersistedContentChange(_ newValue: String) {
         if newValue == draftContent {
+            guard !isAwaitingEditorContentReplacement else { return }
             hasPendingLocalChanges = false
             draftBaseContent = newValue
+            return
+        }
+
+        if isAwaitingEditorContentReplacement {
+            draftContent = newValue
+            hasLoadedDraft = true
             return
         }
 
@@ -50,10 +58,14 @@ final class NoteDraftSession: ObservableObject {
         draftContent = newValue
         draftBaseContent = newValue
         hasLoadedDraft = true
+        isAwaitingEditorContentReplacement = false
     }
 
     func updateDraftContent(_ newValue: String) {
-        guard draftContent != newValue else { return }
+        guard !markDraftCleanIfPersistedContentMatches(newValue) else { return }
+        guard draftContent != newValue else {
+            return
+        }
         draftContent = newValue
         schedulePersistence()
     }
@@ -70,6 +82,7 @@ final class NoteDraftSession: ObservableObject {
         draftBaseContent = content
         hasLoadedDraft = true
         hasPendingLocalChanges = false
+        isAwaitingEditorContentReplacement = false
     }
 
     private func schedulePersistence() {
@@ -91,23 +104,47 @@ final class NoteDraftSession: ObservableObject {
     private func persistDraftIfNeeded(_ content: String) {
         guard let persistedContent = readPersistedContent() else {
             hasPendingLocalChanges = false
+            isAwaitingEditorContentReplacement = false
             draftBaseContent = nil
             return
         }
 
         guard persistedContent != content else {
             hasPendingLocalChanges = false
+            isAwaitingEditorContentReplacement = false
             draftBaseContent = persistedContent
             return
         }
 
         let expectedBaseContent = draftBaseContent ?? persistedContent
-        let result = persistDraftContent(content, expectedBaseContent)
-        if let primaryContent = result.primaryContent {
+        switch persistDraftContent(content, expectedBaseContent) {
+        case let .persisted(primaryContent):
             draftContent = primaryContent
             draftBaseContent = primaryContent
+            hasPendingLocalChanges = false
+            isAwaitingEditorContentReplacement = false
+        case let .conflicted(primaryContent, _):
+            draftContent = primaryContent
+            draftBaseContent = expectedBaseContent
+            hasPendingLocalChanges = content != primaryContent
+            isAwaitingEditorContentReplacement = hasPendingLocalChanges
+        case .missing:
+            hasPendingLocalChanges = false
+            isAwaitingEditorContentReplacement = false
         }
+    }
+
+    @discardableResult
+    private func markDraftCleanIfPersistedContentMatches(_ content: String) -> Bool {
+        guard hasPendingLocalChanges else { return false }
+        guard readPersistedContent() == content else { return false }
+        saveTask?.cancel()
+        saveTask = nil
+        draftContent = content
         hasPendingLocalChanges = false
+        isAwaitingEditorContentReplacement = false
+        draftBaseContent = content
+        return true
     }
 
     private func resetState() {
@@ -115,6 +152,7 @@ final class NoteDraftSession: ObservableObject {
         saveTask = nil
         hasLoadedDraft = false
         hasPendingLocalChanges = false
+        isAwaitingEditorContentReplacement = false
         draftBaseContent = nil
         draftContent = ""
     }
