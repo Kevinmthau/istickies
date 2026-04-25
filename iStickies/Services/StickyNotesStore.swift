@@ -181,10 +181,6 @@ final class StickyNotesStore: ObservableObject {
 
         do {
             let remoteSnapshot = try await cloudService.fetchAllNotes()
-            if case let .unavailable(message) = remoteSnapshot.completeness {
-                throw StickyNotesCloudSyncError(message: message)
-            }
-
             let mergeOutcome = StickyNotesMergeEngine.merge(
                 localNotes: notes,
                 remoteNotes: remoteSnapshot.notes,
@@ -195,6 +191,9 @@ final class StickyNotesStore: ObservableObject {
             if mergedNotes != notes {
                 notes = sortNotes(mergedNotes)
                 persistSnapshot()
+            }
+            if case let .unavailable(message) = remoteSnapshot.completeness {
+                throw StickyNotesCloudSyncError(message: message)
             }
             let outgoingSaves = notes.filter(\.needsCloudUpload)
             let outgoingSavesByID = Dictionary(uniqueKeysWithValues: outgoingSaves.map { ($0.id, $0) })

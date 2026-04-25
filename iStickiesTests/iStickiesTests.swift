@@ -116,6 +116,59 @@ struct iStickiesTests {
         #expect(store.syncState == .failed("CloudKit fetch failed."))
     }
 
+    @Test func unavailableCloudSnapshotMergesKnownRemoteNotesBeforeSuppressingUploads() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let previousSyncDate = Date(timeIntervalSince1970: 30)
+        let pendingLocalNote = StickyNote(
+            id: "pending-local-note",
+            content: "Pending local note",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: nil
+        )
+        let remoteNote = StickyNote(
+            id: "remote-note",
+            content: "Known remote note",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 40),
+            lastModified: Date(timeIntervalSince1970: 50),
+            isOpen: false,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: nil
+        )
+        try await fileStore.save(
+            StickyNotesSnapshot(
+                notes: [pendingLocalNote],
+                pendingDeletionIDs: [],
+                lastSuccessfulCloudSync: previousSyncDate,
+                cloudKitStateSerializationData: Data([1])
+            )
+        )
+        let cloudService = MockCloudService(
+            remoteNotes: [remoteNote],
+            remoteSnapshotCompleteness: .unavailable("CloudKit fetch failed.")
+        )
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: cloudService, autoLoad: false)
+
+        await store.load()
+        await store.syncNow()
+
+        let mergedRemoteNote = try #require(store.note(withID: remoteNote.id))
+        #expect(mergedRemoteNote.content == remoteNote.content)
+        #expect(mergedRemoteNote.needsCloudUpload == false)
+        #expect(store.note(withID: pendingLocalNote.id)?.needsCloudUpload == true)
+        let remoteNotes = await cloudService.snapshot()
+        #expect(remoteNotes.contains(where: { $0.id == remoteNote.id }))
+        #expect(!remoteNotes.contains(where: { $0.id == pendingLocalNote.id }))
+        #expect(store.syncState == .failed("CloudKit fetch failed."))
+        #expect(store.lastSuccessfulCloudSync == previousSyncDate)
+    }
+
     @Test func partialRemoteSnapshotDoesNotDeleteCleanLocalNotes() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let previousSyncDate = Date(timeIntervalSince1970: 30)
