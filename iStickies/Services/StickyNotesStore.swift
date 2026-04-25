@@ -181,6 +181,10 @@ final class StickyNotesStore: ObservableObject {
 
         do {
             let remoteSnapshot = try await cloudService.fetchAllNotes()
+            if case let .unavailable(message) = remoteSnapshot.completeness {
+                throw StickyNotesCloudSyncError(message: message)
+            }
+
             let mergeOutcome = StickyNotesMergeEngine.merge(
                 localNotes: notes,
                 remoteNotes: remoteSnapshot.notes,
