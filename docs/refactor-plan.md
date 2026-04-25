@@ -4,7 +4,9 @@
 
 This checkout is a SwiftUI macOS/iOS sticky-notes app with local JSON persistence and CloudKit sync. It is not the Vite/React/Netlify/Supabase repository described in the initial review prompt: there is no `package.json`, `netlify/`, `assistant.ts`, `sync.ts`, TypeScript, SQL, or Supabase code in this repo.
 
-The biggest production risk is that an empty, unavailable, partial, or otherwise incomplete CloudKit result can currently look the same as a complete empty remote snapshot. That makes it possible for clean local notes to disappear during sync. The second major risk is cross-device conflict handling: an active editor draft can ignore a remote update and later flush over it without checking whether the persisted base changed.
+The previous highest production data-loss risk was that an empty, unavailable, partial, or otherwise incomplete CloudKit result could look the same as a complete empty remote snapshot. That P0 sync safety fix is now implemented: remote fetches return typed completeness metadata, missing remote records only delete clean local notes for complete snapshots, unavailable snapshots merge known remote notes before aborting outgoing saves/deletions, and incomplete snapshots no longer advance `lastSuccessfulCloudSync`.
+
+The previous biggest remaining correctness risk was cross-device conflict handling: an active editor draft could ignore a remote update and later flush over it without checking whether the persisted base changed. That P0 draft safety fix is now implemented: editor drafts track their persisted base content, delayed saves use a checked store API, and stale draft flushes create a conflict copy instead of overwriting the current primary note.
 
 Architecturally, `iStickies/Services/StickyNotesCloudService.swift` is the most overloaded module. It combines CloudKit entitlement gating, sync-engine lifecycle, zone management, event handling, retry classification, record mapping, legacy migration, and query pagination. `iStickies/Services/StickyNotesStore.swift` is also doing too much: state mutation, persistence, sync scheduling, merge application, and user-facing error state all live in one `@MainActor` object.
 
@@ -22,9 +24,9 @@ Result: passed.
 
 ### P0: Incomplete or unavailable CloudKit snapshots can delete clean local notes
 
-**Status:** Implemented in this pass. `fetchAllNotes()` now returns a typed `CloudRemoteSnapshot` with completeness metadata, merge only applies remote-deletion semantics to `.complete` snapshots, disabled CloudKit reports `.unavailable`, CloudKit record-level fetch/decode problems make the snapshot `.partial`, and incomplete snapshots no longer advance `lastSuccessfulCloudSync`.
+**Status:** Implemented. `fetchAllNotes()` now returns a typed `CloudRemoteSnapshot` with completeness metadata, merge only applies remote-deletion semantics to `.complete` snapshots, disabled CloudKit reports `.unavailable`, CloudKit record-level fetch/decode problems make the snapshot `.partial`, incomplete snapshots no longer advance `lastSuccessfulCloudSync`, and unavailable snapshots stop before outgoing saves/deletions after merging any known remote notes.
 
-**Why it matters:** `StickyNotesStore.syncNow()` treats `cloudService.fetchAllNotes()` as authoritative. `StickyNotesMergeEngine.merge()` then drops local notes that are not dirty and are not present in the remote array. That is only safe when the remote array is known to be a complete snapshot. Today, disabled CloudKit, account changes, partial query failures, skipped malformed records, or any incomplete fetch can all collapse into a plain `[StickyNote]`.
+**Why it mattered:** Before this fix, `StickyNotesStore.syncNow()` treated `cloudService.fetchAllNotes()` as authoritative. `StickyNotesMergeEngine.merge()` then dropped local notes that were not dirty and were not present in the remote array. That is only safe when the remote array is known to be a complete snapshot. Disabled CloudKit, account changes, partial query failures, skipped malformed records, or any incomplete fetch could all collapse into a plain `[StickyNote]`.
 
 **Files/functions involved:**
 
@@ -39,7 +41,7 @@ Result: passed.
   - `CloudKitStickyNotesCloudService.fetchRecords(query:zoneID:)`
   - `CloudKitStickyNotesCloudService.handleEvent(_:syncEngine:)`
 
-**Concrete recommendation:** Replace the bare `[StickyNote]` fetch contract with a typed result, for example:
+**Implemented behavior:** The bare `[StickyNote]` fetch contract has been replaced with a typed result:
 
 ```swift
 struct CloudRemoteSnapshot: Sendable {
@@ -54,17 +56,19 @@ enum CloudRemoteSnapshotCompleteness: Sendable, Equatable {
 }
 ```
 
-Only allow remote-deletion semantics when completeness is `.complete`. Treat disabled CloudKit, account unavailable, partial query failures, and malformed/skipped records as non-authoritative snapshots. In those states, merge remote additions/updates if safe, but do not delete local clean notes just because they are missing remotely.
+Remote-deletion semantics are only allowed when completeness is `.complete`. Disabled CloudKit, account unavailable, partial query failures, and malformed/skipped records are treated as non-authoritative snapshots. In those states, the store can still merge known remote additions/updates when safe, but it does not delete clean local notes just because they are missing remotely.
 
-Also update `fetchRecords(query:zoneID:)` so `recordMatchedBlock` failures are collected and reported. It currently appends successful records and silently ignores failed records.
+`fetchRecords(query:zoneID:)` now collects record-level failures instead of silently ignoring them, and record mapping reports malformed/skipped records as partial snapshot issues.
 
-**Expected payoff:** Removes the highest data-loss path in the app.
+**Expected payoff:** Removed the highest data-loss path in the app.
 
-**Rough implementation scope:** medium.
+**Implementation scope:** medium, completed.
 
 ### P0: Dirty editor drafts can silently overwrite remote edits
 
-**Why it matters:** `NoteDraftSession` intentionally ignores persisted content changes while local edits are pending. That prevents active typing from being disrupted, but when the delayed save later fires, it persists the local draft through `store.updateContent()` without checking whether the underlying persisted content changed while the draft was dirty. A remote edit can therefore arrive, be ignored, and then get overwritten by the stale local draft.
+**Status:** Implemented. `NoteDraftSession` tracks the persisted base content for a dirty draft, delayed saves call a checked store persistence API with that expected base, and stale draft flushes preserve the current primary note while creating a `Conflict Copy` for the local draft.
+
+**Why it mattered:** `NoteDraftSession` intentionally ignores persisted content changes while local edits are pending. That prevents active typing from being disrupted, but before this fix, when the delayed save later fired, it persisted the local draft through `store.updateContent()` without checking whether the underlying persisted content changed while the draft was dirty. A remote edit could therefore arrive, be ignored, and then get overwritten by the stale local draft.
 
 **Files/functions involved:**
 
@@ -76,18 +80,19 @@ Also update `fetchRecords(query:zoneID:)` so `recordMatchedBlock` failures are c
   - `StickyNoteEditor.configureDraftSession(with:force:)`
 - `iStickies/Services/StickyNotesStore.swift`
   - `updateContent(id:content:)`
+  - `updateContent(id:content:expectedBaseContent:)`
 
-**Concrete recommendation:** Track a draft base value or content version when editing starts. On flush, compare:
+**Implemented behavior:** The editor tracks a draft base value when editing starts. On flush, it compares:
 
 - draft base content/version
 - current persisted content/version
 - draft content
 
-If persisted content changed since the draft base and differs from the draft, route through explicit conflict handling instead of blindly calling `updateContent`. A small first step is to create a conflict copy for the local draft and leave the remote/persisted content as the primary note.
+If persisted content changed since the draft base and differs from the draft, the store routes through explicit conflict handling instead of blindly calling `updateContent`. The current persisted note stays primary, the local draft is preserved as a new conflict copy, and the editor draft resets to the primary content after the conflict is recorded.
 
 **Expected payoff:** Prevents silent cross-device overwrite during active typing.
 
-**Rough implementation scope:** medium.
+**Implementation scope:** medium, completed.
 
 ### P1: CloudKit service is the main architectural bottleneck
 
@@ -308,17 +313,33 @@ for (_, window) in windowsToClose {
 
 ### Stage 1: Lock down sync safety
 
-Start with the P0 sync contract change. This is the most important behavior fix and should happen before large file splitting. Introduce a typed remote snapshot result, update merge semantics so incomplete snapshots cannot delete clean local notes, and add targeted tests.
+Status: complete for the P0 data-loss path.
 
-Keep the implementation incremental:
+Completed work:
 
-1. Add `CloudRemoteSnapshot` and completeness states.
-2. Change `StickyNotesCloudSyncing.fetchAllNotes()` to return that type.
-3. Update `StickyNotesStore.syncNow()` to pass snapshot completeness into merge.
-4. Update merge logic to only apply remote deletion semantics for complete snapshots.
-5. Add tests for disabled cloud, partial fetch failure, and malformed/skipped records.
+1. Added `CloudRemoteSnapshot` and completeness states.
+2. Changed `StickyNotesCloudSyncing.fetchAllNotes()` to return that type.
+3. Updated `StickyNotesStore.syncNow()` to pass snapshot completeness into merge.
+4. Updated merge logic to only apply remote deletion semantics for complete snapshots.
+5. Added tests for unavailable cloud snapshots, unavailable snapshots with pending deletions, unavailable snapshots with known remote notes, partial snapshots, and malformed/skipped remote records.
 
-### Stage 2: Extract CloudKit pure seams
+Remaining follow-up: add structured observability for snapshot completeness and record-level failures.
+
+### Stage 2: Harden editor draft conflict handling
+
+Status: complete for the P0 dirty-draft overwrite path.
+
+Completed work:
+
+1. Track the persisted base content or base revision when the editor draft becomes dirty.
+2. Add a store persistence API that receives the expected base and current draft content.
+3. If the current persisted content changed since the base and differs from the draft, keep the current persisted note as primary and create a conflict copy for the local draft.
+4. Wire delayed editor saves through the checked persistence path.
+5. Add tests where a local draft is pending, a remote content update arrives, and the delayed flush preserves both versions.
+
+Remaining follow-up: consider using stable CloudKit/version metadata instead of content equality alone for richer conflict decisions.
+
+### Stage 3: Extract CloudKit pure seams
 
 Extract low-risk components from `StickyNotesCloudService.swift` without changing behavior:
 
@@ -328,7 +349,7 @@ Extract low-risk components from `StickyNotesCloudService.swift` without changin
 
 These components can be unit-tested without live CloudKit and will make the later sync fixes easier to review.
 
-### Stage 3: Separate sync orchestration from store mutation
+### Stage 4: Separate sync orchestration from store mutation
 
 Move `syncNow()` orchestration out of `StickyNotesStore` into a small coordinator that receives local state and returns a state transition:
 
@@ -340,10 +361,6 @@ Move `syncNow()` orchestration out of `StickyNotesStore` into a small coordinato
 - choose retry delay
 
 The store should still own published state and UI-facing mutation APIs, but it should not own the whole sync workflow.
-
-### Stage 4: Harden editor draft conflict handling
-
-Add draft base tracking to `NoteDraftSession` and a store API that can persist a draft only if the expected base still matches. If not, preserve the local draft as a conflict copy.
 
 ### Stage 5: Normalize state and reduce UI churn
 
@@ -369,25 +386,25 @@ Only after correctness is improved, consider normalizing store state into `notes
 
 ### Highest-risk correctness issues
 
-1. Incomplete CloudKit snapshots deleting clean local notes.
-   - Add tests for disabled CloudKit, account unavailable, partial query failure, malformed record skip, and missing zone.
-   - Add observability for snapshot completeness and record-level failures.
-
-2. Dirty local drafts overwriting remote edits.
-   - Add a test where a local draft is pending, remote content arrives, then flush preserves both versions.
-   - Add base-version checks to draft persistence.
-
-3. Corrupt sync-state serialization wedging sync.
+1. Corrupt sync-state serialization wedging sync.
    - Add a test with invalid `cloudKitStateSerializationData`.
    - Discard only bad CloudKit engine state and preserve local notes.
 
-4. Corrupt local snapshot file causing empty-state sync.
+2. Corrupt local snapshot file causing empty-state sync.
    - Add decode recovery tests.
    - Quarantine unreadable snapshots and avoid treating empty local state as authoritative.
 
-5. Client-clock conflict mistakes.
+3. Client-clock conflict mistakes.
    - Add tests with skewed local/remote `lastModified` values.
    - Introduce stable sync revision metadata.
+
+4. Dirty local drafts overwriting remote edits.
+   - Status: implemented for the known P0 dirty-draft overwrite path.
+   - Follow-up: add stable version metadata for richer conflict checks.
+
+5. Incomplete CloudKit snapshots deleting clean local notes.
+   - Status: implemented for the known P0 data-loss path.
+   - Add observability for snapshot completeness and record-level failures.
 
 ### Security and production readiness
 
@@ -398,4 +415,4 @@ Only after correctness is improved, consider normalizing store state into `notes
 
 ## Best next implementation prompt
 
-Implement the P0 sync safety fix: change the CloudKit fetch contract so unavailable or incomplete remote snapshots cannot delete clean local notes; collect per-record query failures; update `StickyNotesStore.syncNow` and `StickyNotesMergeEngine` accordingly; add tests for disabled cloud service with a clean local snapshot, partial remote fetch failure, and malformed remote record handling.
+Implement corrupt CKSyncEngine state recovery: add a test with invalid `cloudKitStateSerializationData`, catch decode failures inside `CloudKitStickyNotesCloudService.ensureSyncEngine()`, discard only the bad sync-engine serialization, force remote cache hydration, and preserve local notes plus pending deletions.

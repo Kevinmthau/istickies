@@ -9,6 +9,21 @@ enum StickyNotesSyncState: Equatable {
     case failed(String)
 }
 
+enum StickyNoteDraftPersistenceResult: Equatable {
+    case persisted(primaryContent: String)
+    case conflicted(primaryContent: String, conflictCopyID: String)
+    case missing
+
+    var primaryContent: String? {
+        switch self {
+        case let .persisted(primaryContent), let .conflicted(primaryContent, _):
+            return primaryContent
+        case .missing:
+            return nil
+        }
+    }
+}
+
 @MainActor
 final class StickyNotesStore: ObservableObject {
     private struct CommitOptions {
@@ -101,6 +116,43 @@ final class StickyNotesStore: ObservableObject {
         ) { note in
             note.content = content
         }
+    }
+
+    @discardableResult
+    func updateContent(
+        id: String,
+        content: String,
+        expectedBaseContent: String
+    ) -> StickyNoteDraftPersistenceResult {
+        guard let index = notes.firstIndex(where: { $0.id == id }) else { return .missing }
+
+        let currentNote = notes[index]
+        guard currentNote.content != content else {
+            return .persisted(primaryContent: currentNote.content)
+        }
+
+        guard currentNote.content == expectedBaseContent else {
+            let conflictCopy = makeDraftConflictCopy(from: currentNote, content: content)
+            commitStateChange(
+                CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+            ) {
+                notes.append(conflictCopy)
+                return true
+            }
+            return .conflicted(
+                primaryContent: currentNote.content,
+                conflictCopyID: conflictCopy.id
+            )
+        }
+
+        mutateNote(
+            id: id,
+            touchModifiedAt: true,
+            commitOptions: CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+        ) { note in
+            note.content = content
+        }
+        return .persisted(primaryContent: content)
     }
 
     func updateColor(id: String, color: StickyNoteColor) {
@@ -305,6 +357,20 @@ final class StickyNotesStore: ObservableObject {
 
             return $0.createdAt > $1.createdAt
         }
+    }
+
+    private func makeDraftConflictCopy(from note: StickyNote, content: String) -> StickyNote {
+        StickyNote(
+            content: content,
+            titleOverride: "Conflict Copy",
+            color: note.color,
+            createdAt: note.createdAt,
+            lastModified: Date(),
+            isOpen: true,
+            preferredFrame: note.preferredFrame,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: nil
+        )
     }
 
     private func applyLoadedSnapshot(_ snapshot: StickyNotesSnapshot) {

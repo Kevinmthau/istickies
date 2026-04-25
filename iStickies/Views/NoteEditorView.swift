@@ -142,8 +142,12 @@ struct StickyNoteEditor: View {
             readPersistedContent: {
                 store.note(withID: currentNoteID)?.content
             },
-            persistDraftContent: { content in
-                store.updateContent(id: currentNoteID, content: content)
+            persistDraftContent: { content, expectedBaseContent in
+                store.updateContent(
+                    id: currentNoteID,
+                    content: content,
+                    expectedBaseContent: expectedBaseContent
+                )
             }
         )
     }

@@ -8,8 +8,9 @@ final class NoteDraftSession: ObservableObject {
     private var noteID: String?
     private var hasLoadedDraft = false
     private var hasPendingLocalChanges = false
+    private var draftBaseContent: String?
     private var readPersistedContent: @MainActor () -> String? = { nil }
-    private var persistDraftContent: @MainActor (String) -> Void = { _ in }
+    private var persistDraftContent: @MainActor (String, String) -> StickyNoteDraftPersistenceResult = { _, _ in .missing }
     private var saveTask: Task<Void, Never>?
 
     init(debounceInterval: Duration = .milliseconds(250)) {
@@ -25,7 +26,7 @@ final class NoteDraftSession: ObservableObject {
         initialContent: String,
         force: Bool = false,
         readPersistedContent: @escaping @MainActor () -> String?,
-        persistDraftContent: @escaping @MainActor (String) -> Void
+        persistDraftContent: @escaping @MainActor (String, String) -> StickyNoteDraftPersistenceResult
     ) {
         if let existingNoteID = self.noteID, existingNoteID != noteID {
             flush()
@@ -41,11 +42,13 @@ final class NoteDraftSession: ObservableObject {
     func handlePersistedContentChange(_ newValue: String) {
         if newValue == draftContent {
             hasPendingLocalChanges = false
+            draftBaseContent = newValue
             return
         }
 
         guard !hasPendingLocalChanges else { return }
         draftContent = newValue
+        draftBaseContent = newValue
         hasLoadedDraft = true
     }
 
@@ -64,12 +67,17 @@ final class NoteDraftSession: ObservableObject {
     private func syncDraft(with content: String, force: Bool) {
         guard force || !hasLoadedDraft else { return }
         draftContent = content
+        draftBaseContent = content
         hasLoadedDraft = true
         hasPendingLocalChanges = false
     }
 
     private func schedulePersistence() {
-        hasPendingLocalChanges = readPersistedContent() != draftContent
+        let persistedContent = readPersistedContent()
+        if !hasPendingLocalChanges {
+            draftBaseContent = persistedContent ?? draftBaseContent
+        }
+        hasPendingLocalChanges = persistedContent != draftContent
         saveTask?.cancel()
         saveTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -81,12 +89,24 @@ final class NoteDraftSession: ObservableObject {
     }
 
     private func persistDraftIfNeeded(_ content: String) {
-        guard readPersistedContent() != content else {
+        guard let persistedContent = readPersistedContent() else {
             hasPendingLocalChanges = false
+            draftBaseContent = nil
             return
         }
 
-        persistDraftContent(content)
+        guard persistedContent != content else {
+            hasPendingLocalChanges = false
+            draftBaseContent = persistedContent
+            return
+        }
+
+        let expectedBaseContent = draftBaseContent ?? persistedContent
+        let result = persistDraftContent(content, expectedBaseContent)
+        if let primaryContent = result.primaryContent {
+            draftContent = primaryContent
+            draftBaseContent = primaryContent
+        }
         hasPendingLocalChanges = false
     }
 
@@ -95,6 +115,7 @@ final class NoteDraftSession: ObservableObject {
         saveTask = nil
         hasLoadedDraft = false
         hasPendingLocalChanges = false
+        draftBaseContent = nil
         draftContent = ""
     }
 }

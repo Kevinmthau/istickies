@@ -506,7 +506,10 @@ struct iStickiesTests {
             noteID: "note",
             initialContent: persistedContent,
             readPersistedContent: { persistedContent },
-            persistDraftContent: { persistedContent = $0 }
+            persistDraftContent: { content, _ in
+                persistedContent = content
+                return .persisted(primaryContent: persistedContent)
+            }
         )
 
         session.updateDraftContent("First draft")
@@ -528,7 +531,10 @@ struct iStickiesTests {
             noteID: "first",
             initialContent: persistedContentByID["first"] ?? "",
             readPersistedContent: { persistedContentByID["first"] },
-            persistDraftContent: { persistedContentByID["first"] = $0 }
+            persistDraftContent: { content, _ in
+                persistedContentByID["first"] = content
+                return .persisted(primaryContent: content)
+            }
         )
         session.updateDraftContent("Edited first note")
 
@@ -537,7 +543,10 @@ struct iStickiesTests {
             initialContent: persistedContentByID["second"] ?? "",
             force: true,
             readPersistedContent: { persistedContentByID["second"] },
-            persistDraftContent: { persistedContentByID["second"] = $0 }
+            persistDraftContent: { content, _ in
+                persistedContentByID["second"] = content
+                return .persisted(primaryContent: content)
+            }
         )
 
         #expect(persistedContentByID["first"] == "Edited first note")
@@ -552,7 +561,10 @@ struct iStickiesTests {
             noteID: "note",
             initialContent: persistedContent,
             readPersistedContent: { persistedContent },
-            persistDraftContent: { persistedContent = $0 }
+            persistDraftContent: { content, _ in
+                persistedContent = content
+                return .persisted(primaryContent: persistedContent)
+            }
         )
 
         session.updateDraftContent("Local edit")
@@ -569,7 +581,10 @@ struct iStickiesTests {
             noteID: "note",
             initialContent: persistedContent,
             readPersistedContent: { persistedContent },
-            persistDraftContent: { persistedContent = $0 }
+            persistDraftContent: { content, _ in
+                persistedContent = content
+                return .persisted(primaryContent: persistedContent)
+            }
         )
 
         session.updateDraftContent("Local edit")
@@ -578,6 +593,79 @@ struct iStickiesTests {
 
         #expect(persistedContent == "Local edit")
         #expect(session.draftContent == "Remote edit")
+    }
+
+    @Test func pendingDraftFlushCreatesConflictCopyWhenPersistedContentChanged() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let sharedID = "shared-note"
+        let originalNote = StickyNote(
+            id: sharedID,
+            content: "Original",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([1])
+        )
+        try await fileStore.save(
+            StickyNotesSnapshot(
+                notes: [originalNote],
+                pendingDeletionIDs: [],
+                lastSuccessfulCloudSync: Date(timeIntervalSince1970: 25),
+                cloudKitStateSerializationData: Data([1])
+            )
+        )
+
+        let remoteNote = StickyNote(
+            id: sharedID,
+            content: "Remote edit",
+            color: .yellow,
+            createdAt: originalNote.createdAt,
+            lastModified: Date(timeIntervalSince1970: 30),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([2])
+        )
+        let cloudService = MockCloudService(remoteNotes: [remoteNote])
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: cloudService, autoLoad: false)
+        let session = NoteDraftSession(debounceInterval: .seconds(10))
+
+        await store.load()
+        session.configure(
+            noteID: sharedID,
+            initialContent: originalNote.content,
+            readPersistedContent: { store.note(withID: sharedID)?.content },
+            persistDraftContent: { content, expectedBaseContent in
+                store.updateContent(
+                    id: sharedID,
+                    content: content,
+                    expectedBaseContent: expectedBaseContent
+                )
+            }
+        )
+        session.updateDraftContent("Local draft")
+
+        await store.syncNow()
+        let remotePrimary = try #require(store.note(withID: sharedID))
+        session.handlePersistedContentChange(remotePrimary.content)
+
+        session.flush()
+
+        let primaryNote = try #require(store.note(withID: sharedID))
+        #expect(primaryNote.content == "Remote edit")
+        #expect(primaryNote.needsCloudUpload == false)
+        #expect(session.draftContent == "Remote edit")
+
+        let conflictCopies = store.notes.filter { note in
+            note.id != sharedID && note.title == "Conflict Copy"
+        }
+        #expect(conflictCopies.count == 1)
+        let conflictCopy = try #require(conflictCopies.first)
+        #expect(conflictCopy.content == "Local draft")
+        #expect(conflictCopy.needsCloudUpload)
     }
 
     @Test func flushPendingPersistenceKeepsAllCreatedNotesAcrossReload() async throws {
