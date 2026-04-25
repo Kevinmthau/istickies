@@ -394,6 +394,81 @@ struct iStickiesTests {
         )
     }
 
+    @Test func cloudKitSendBatchTrackerFinalizesResolvedBatch() throws {
+        var tracker = CloudKitSendBatchTracker()
+        let savedNote = StickyNote(
+            id: "saved-note",
+            content: "Saved",
+            needsCloudUpload: true
+        )
+        let remoteConflictNote = StickyNote(
+            id: "conflicting-note",
+            content: "Remote",
+            needsCloudUpload: true
+        )
+
+        tracker.begin(
+            expectedSaveNoteIDs: [savedNote.id, remoteConflictNote.id],
+            expectedDeleteNoteIDs: ["deleted-note"]
+        )
+        tracker.markSaved(savedNote)
+        tracker.markConflict(noteID: remoteConflictNote.id, remoteNote: remoteConflictNote)
+        tracker.markDeleted(noteID: "deleted-note")
+
+        let result = tracker.finalize()
+        let savedResult = try #require(result.savedNotes.first)
+        let conflict = try #require(result.conflicts.first)
+
+        #expect(tracker.hasActiveBatch == false)
+        #expect(result.savedNotes.count == 1)
+        #expect(savedResult.id == savedNote.id)
+        #expect(savedResult.needsCloudUpload == false)
+        #expect(result.deletedNoteIDs == ["deleted-note"])
+        #expect(result.conflicts.count == 1)
+        #expect(conflict.localNoteID == remoteConflictNote.id)
+        #expect(conflict.remoteNote.content == "Remote")
+        #expect(conflict.remoteNote.needsCloudUpload == false)
+        #expect(result.failureMessage == nil)
+    }
+
+    @Test func cloudKitSendBatchTrackerTreatsRetriableSavesAsResolvedForThisBatch() throws {
+        var tracker = CloudKitSendBatchTracker()
+        let pendingNote = StickyNote(
+            id: "pending-note",
+            content: "Needs retry",
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: nil
+        )
+
+        tracker.begin(expectedSaveNoteIDs: [pendingNote.id], expectedDeleteNoteIDs: [])
+        tracker.markPendingSaveForRetry(pendingNote)
+
+        let result = tracker.finalize()
+        let retryNote = try #require(result.pendingNotesRequiringRetry.first)
+
+        #expect(result.pendingNotesRequiringRetry.count == 1)
+        #expect(retryNote.id == pendingNote.id)
+        #expect(retryNote.needsCloudUpload)
+        #expect(result.failureMessage == nil)
+    }
+
+    @Test func cloudKitSendBatchTrackerReportsUnresolvedExpectedChanges() {
+        var tracker = CloudKitSendBatchTracker()
+
+        tracker.begin(
+            expectedSaveNoteIDs: ["unsaved-note"],
+            expectedDeleteNoteIDs: ["undeleted-note"]
+        )
+
+        let result = tracker.finalize()
+
+        #expect(result.savedNotes.isEmpty)
+        #expect(result.deletedNoteIDs.isEmpty)
+        #expect(result.pendingNotesRequiringRetry.isEmpty)
+        #expect(result.conflicts.isEmpty)
+        #expect(result.failureMessage == "Some CloudKit changes are still pending.")
+    }
+
     @Test func cloudKitRecordIgnoresRemoteWindowState() throws {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
         let record = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
