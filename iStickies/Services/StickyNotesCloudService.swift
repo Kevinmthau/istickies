@@ -115,7 +115,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     private var activeSendContext: ActiveSendContext?
     private var didResolveZoneExistence = false
     private var zoneExistsRemotely = false
-    private var restoredFromPersistedSyncState = false
+    private var hadPersistedSyncStateSerialization = false
     private var didHydrateRemoteZoneSnapshot = false
     private var needsRemoteZoneSnapshotHydration = false
     private var didAttemptLegacyDefaultZoneImport = false
@@ -136,7 +136,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     func restore(stateSerializationData: Data?) async {
         guard syncEngine == nil else { return }
         self.stateSerializationData = stateSerializationData
-        restoredFromPersistedSyncState = stateSerializationData != nil
+        hadPersistedSyncStateSerialization = stateSerializationData != nil
         didHydrateRemoteZoneSnapshot = false
         needsRemoteZoneSnapshotHydration = stateSerializationData != nil
     }
@@ -212,7 +212,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         }
 
         let restoredState = CloudKitSyncEngineStateRecovery.restore(from: stateSerializationData)
-        restoredFromPersistedSyncState = restoredState.restoredFromPersistedSyncState
+        hadPersistedSyncStateSerialization = restoredState.hadPersistedSyncStateSerialization
         if restoredState.recoveredFromCorruptSerialization {
             stateSerializationData = nil
             didHydrateRemoteZoneSnapshot = false
@@ -259,7 +259,10 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     }
 
     private func importLegacyDefaultZoneNotesIfNeeded(syncEngine: CKSyncEngine) async throws -> [String] {
-        guard !restoredFromPersistedSyncState, !didAttemptLegacyDefaultZoneImport else { return [] }
+        guard CloudKitLegacyDefaultZoneImportPolicy.shouldImport(
+            hadPersistedSyncStateSerialization: hadPersistedSyncStateSerialization,
+            didAttemptLegacyDefaultZoneImport: didAttemptLegacyDefaultZoneImport
+        ) else { return [] }
 
         let query = CKQuery(recordType: StickyNote.recordType, predicate: NSPredicate(value: true))
         query.sortDescriptors = [NSSortDescriptor(key: StickyNoteRecordField.lastModified, ascending: false)]
@@ -771,6 +774,7 @@ struct CloudRemoteRecordMappingResult: Sendable {
 
 struct CloudKitSyncEngineStateRecoveryResult {
     var stateSerialization: CKSyncEngine.State.Serialization?
+    var hadPersistedSyncStateSerialization: Bool
     var recoveredFromCorruptSerialization: Bool
 
     var restoredFromPersistedSyncState: Bool {
@@ -783,6 +787,7 @@ enum CloudKitSyncEngineStateRecovery {
         guard let stateSerializationData else {
             return CloudKitSyncEngineStateRecoveryResult(
                 stateSerialization: nil,
+                hadPersistedSyncStateSerialization: false,
                 recoveredFromCorruptSerialization: false
             )
         }
@@ -794,14 +799,25 @@ enum CloudKitSyncEngineStateRecovery {
             )
             return CloudKitSyncEngineStateRecoveryResult(
                 stateSerialization: stateSerialization,
+                hadPersistedSyncStateSerialization: true,
                 recoveredFromCorruptSerialization: false
             )
         } catch {
             return CloudKitSyncEngineStateRecoveryResult(
                 stateSerialization: nil,
+                hadPersistedSyncStateSerialization: true,
                 recoveredFromCorruptSerialization: true
             )
         }
+    }
+}
+
+enum CloudKitLegacyDefaultZoneImportPolicy {
+    static func shouldImport(
+        hadPersistedSyncStateSerialization: Bool,
+        didAttemptLegacyDefaultZoneImport: Bool
+    ) -> Bool {
+        !hadPersistedSyncStateSerialization && !didAttemptLegacyDefaultZoneImport
     }
 }
 

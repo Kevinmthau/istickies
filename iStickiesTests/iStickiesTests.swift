@@ -344,7 +344,23 @@ struct iStickiesTests {
 
         #expect(recovery.stateSerialization == nil)
         #expect(recovery.recoveredFromCorruptSerialization)
+        #expect(recovery.hadPersistedSyncStateSerialization)
         #expect(recovery.restoredFromPersistedSyncState == false)
+    }
+
+    @Test func legacyDefaultZoneImportPolicySkipsWhenCorruptStateBytesExisted() {
+        #expect(
+            CloudKitLegacyDefaultZoneImportPolicy.shouldImport(
+                hadPersistedSyncStateSerialization: true,
+                didAttemptLegacyDefaultZoneImport: false
+            ) == false
+        )
+        #expect(
+            CloudKitLegacyDefaultZoneImportPolicy.shouldImport(
+                hadPersistedSyncStateSerialization: false,
+                didAttemptLegacyDefaultZoneImport: false
+            )
+        )
     }
 
     @Test func cloudKitRecordIgnoresRemoteWindowState() throws {
