@@ -211,19 +211,16 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             return syncEngine
         }
 
-        let stateSerialization: CKSyncEngine.State.Serialization?
-        if let stateSerializationData {
-            stateSerialization = try JSONDecoder().decode(
-                CKSyncEngine.State.Serialization.self,
-                from: stateSerializationData
-            )
-        } else {
-            stateSerialization = nil
+        let restoredState = CloudKitSyncEngineStateRecovery.restore(from: stateSerializationData)
+        if restoredState.recoveredFromCorruptSerialization {
+            stateSerializationData = nil
+            didHydrateRemoteZoneSnapshot = false
+            needsRemoteZoneSnapshotHydration = true
         }
 
         var configuration = CKSyncEngine.Configuration(
             database: database,
-            stateSerialization: stateSerialization,
+            stateSerialization: restoredState.stateSerialization,
             delegate: self
         )
         configuration.automaticallySync = false
@@ -769,6 +766,38 @@ private struct CloudFetchedRecords {
 struct CloudRemoteRecordMappingResult: Sendable {
     var notesByID: [String: StickyNote]
     var issueMessages: [String]
+}
+
+struct CloudKitSyncEngineStateRecoveryResult {
+    var stateSerialization: CKSyncEngine.State.Serialization?
+    var recoveredFromCorruptSerialization: Bool
+}
+
+enum CloudKitSyncEngineStateRecovery {
+    static func restore(from stateSerializationData: Data?) -> CloudKitSyncEngineStateRecoveryResult {
+        guard let stateSerializationData else {
+            return CloudKitSyncEngineStateRecoveryResult(
+                stateSerialization: nil,
+                recoveredFromCorruptSerialization: false
+            )
+        }
+
+        do {
+            let stateSerialization = try JSONDecoder().decode(
+                CKSyncEngine.State.Serialization.self,
+                from: stateSerializationData
+            )
+            return CloudKitSyncEngineStateRecoveryResult(
+                stateSerialization: stateSerialization,
+                recoveredFromCorruptSerialization: false
+            )
+        } catch {
+            return CloudKitSyncEngineStateRecoveryResult(
+                stateSerialization: nil,
+                recoveredFromCorruptSerialization: true
+            )
+        }
+    }
 }
 
 enum CloudRemoteSnapshotRecordMapper {

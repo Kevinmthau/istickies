@@ -128,6 +128,8 @@ Start by extracting record mapping and send-batch tracking because those require
 
 ### P1: Corrupt persisted CKSyncEngine state can wedge sync
 
+**Status:** Implemented. Invalid persisted `cloudKitStateSerializationData` is now discarded inside the CloudKit service, a fresh `CKSyncEngine` is created, remote-zone snapshot hydration is forced, and store tests verify local notes plus pending deletions survive the recovery path.
+
 **Why it matters:** `ensureSyncEngine()` decodes persisted `CKSyncEngine.State.Serialization` directly. If that decode fails, `syncNow()` catches the error, persists again, and keeps the same bad state in the snapshot. Future launches can repeat the same failure.
 
 **Files/functions involved:**
@@ -387,8 +389,8 @@ Only after correctness is improved, consider normalizing store state into `notes
 ### Highest-risk correctness issues
 
 1. Corrupt sync-state serialization wedging sync.
-   - Add a test with invalid `cloudKitStateSerializationData`.
-   - Discard only bad CloudKit engine state and preserve local notes.
+   - Status: implemented.
+   - Invalid `cloudKitStateSerializationData` is discarded, CloudKit remote-cache hydration is forced, and local notes plus pending deletions are preserved.
 
 2. Corrupt local snapshot file causing empty-state sync.
    - Add decode recovery tests.
@@ -415,4 +417,4 @@ Only after correctness is improved, consider normalizing store state into `notes
 
 ## Best next implementation prompt
 
-Implement corrupt CKSyncEngine state recovery: add a test with invalid `cloudKitStateSerializationData`, catch decode failures inside `CloudKitStickyNotesCloudService.ensureSyncEngine()`, discard only the bad sync-engine serialization, force remote cache hydration, and preserve local notes plus pending deletions.
+Extract the next CloudKit pure seam: move sticky-note record mapping out of `StickyNotesCloudService.swift` into a focused mapper component, keep the existing malformed-record tests passing, and add any missing mapper tests needed to preserve current CloudKit field compatibility.

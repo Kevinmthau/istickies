@@ -169,6 +169,48 @@ struct iStickiesTests {
         #expect(store.lastSuccessfulCloudSync == previousSyncDate)
     }
 
+    @Test func corruptCloudKitStateSerializationIsDiscardedWithoutDroppingLocalState() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let previousSyncDate = Date(timeIntervalSince1970: 30)
+        let pendingDeleteID = "pending-delete"
+        let localNote = StickyNote(
+            id: "local-note",
+            content: "Clean local note",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: nil
+        )
+        try await fileStore.save(
+            StickyNotesSnapshot(
+                notes: [localNote],
+                pendingDeletionIDs: [pendingDeleteID],
+                lastSuccessfulCloudSync: previousSyncDate,
+                cloudKitStateSerializationData: Data("not valid CKSyncEngine state".utf8)
+            )
+        )
+        let cloudService = MockCloudService(
+            remoteSnapshotCompleteness: .unavailable("CloudKit fetch failed.")
+        )
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: cloudService, autoLoad: false)
+
+        await store.load()
+        await store.syncNow()
+        await store.flushPendingPersistence()
+
+        let preservedNote = try #require(store.note(withID: localNote.id))
+        #expect(preservedNote.content == localNote.content)
+        #expect(store.lastSuccessfulCloudSync == previousSyncDate)
+
+        let persistedSnapshot = try await fileStore.load()
+        #expect(persistedSnapshot.notes.contains(where: { $0.id == localNote.id }))
+        #expect(persistedSnapshot.pendingDeletionIDs == [pendingDeleteID])
+        #expect(persistedSnapshot.cloudKitStateSerializationData == nil)
+    }
+
     @Test func partialRemoteSnapshotDoesNotDeleteCleanLocalNotes() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let previousSyncDate = Date(timeIntervalSince1970: 30)
@@ -293,6 +335,15 @@ struct iStickiesTests {
         #expect(mapping.notesByID[validRecordID.recordName]?.content == "Remote note")
         #expect(mapping.notesByID[malformedRecordID.recordName] == nil)
         #expect(mapping.issueMessages == ["1 CloudKit record(s) could not be decoded."])
+    }
+
+    @Test func corruptCloudKitStateSerializationRecoversWithFreshEngineState() {
+        let recovery = CloudKitSyncEngineStateRecovery.restore(
+            from: Data("not valid CKSyncEngine state".utf8)
+        )
+
+        #expect(recovery.stateSerialization == nil)
+        #expect(recovery.recoveredFromCorruptSerialization)
     }
 
     @Test func cloudKitRecordIgnoresRemoteWindowState() throws {
