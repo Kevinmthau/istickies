@@ -394,6 +394,115 @@ struct iStickiesTests {
         )
     }
 
+    @Test func cloudKitErrorClassifierDetectsMissingZoneErrors() {
+        let zoneNotFound = makeCloudKitError(.zoneNotFound)
+        let userDeletedZone = makeCloudKitError(.userDeletedZone)
+        let terminalError = makeCloudKitError(.permissionFailure)
+
+        #expect(CloudKitErrorClassifier.isMissingZone(zoneNotFound))
+        #expect(CloudKitErrorClassifier.isMissingZone(userDeletedZone))
+        #expect(CloudKitErrorClassifier.isMissingZone(terminalError) == false)
+        #expect(CloudKitErrorClassifier.classifyRecordSaveFailure(zoneNotFound).kind == .missingZone)
+        #expect(CloudKitErrorClassifier.classifyRecordDeleteFailure(userDeletedZone).kind == .missingZone)
+    }
+
+    @Test func cloudKitErrorClassifierExtractsServerRecordConflicts() throws {
+        let zoneID = CKRecordZone.ID(zoneName: "StickyNotes")
+        let recordID = CKRecord.ID(recordName: "conflicting-note", zoneID: zoneID)
+        let serverRecord = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
+        let error = makeCloudKitError(
+            .serverRecordChanged,
+            userInfo: [CKRecordChangedErrorServerRecordKey: serverRecord]
+        )
+
+        let classification = CloudKitErrorClassifier.classifyRecordSaveFailure(error)
+        let classifiedServerRecord = try #require(classification.serverRecord)
+
+        #expect(classification.kind == .conflict)
+        #expect(classifiedServerRecord.recordID.recordName == recordID.recordName)
+        #expect(classifiedServerRecord.recordID.zoneID == recordID.zoneID)
+    }
+
+    @Test func cloudKitErrorClassifierClassifiesUnknownItemRetries() {
+        let error = makeCloudKitError(.unknownItem)
+
+        #expect(CloudKitErrorClassifier.classifyRecordSaveFailure(error).kind == .unknownItemRetry)
+        #expect(CloudKitErrorClassifier.classifyRecordDeleteFailure(error).kind == .alreadyDeleted)
+    }
+
+    @Test func cloudKitErrorClassifierClassifiesRecoverablePartialSaveFailures() {
+        let zoneID = CKRecordZone.ID(zoneName: "StickyNotes")
+        let retryRecordID = CKRecord.ID(recordName: "retry-note", zoneID: zoneID)
+        let partialErrors: [AnyHashable: Error] = [
+            AnyHashable(retryRecordID): makeCloudKitError(.unknownItem)
+        ]
+        let partialFailure = makeCloudKitError(
+            .partialFailure,
+            userInfo: [CKPartialErrorsByItemIDKey: partialErrors]
+        )
+
+        let classification = CloudKitErrorClassifier.classifyRetriableSavePartialFailure(
+            partialFailure,
+            targetZoneID: zoneID,
+            pendingSaveNoteIDs: [retryRecordID.recordName]
+        )
+
+        #expect(classification == .recoverableUnknownItemSaves(noteIDs: [retryRecordID.recordName]))
+    }
+
+    @Test func cloudKitErrorClassifierPreservesMixedPartialSaveRecovery() {
+        let zoneID = CKRecordZone.ID(zoneName: "StickyNotes")
+        let retryRecordID = CKRecord.ID(recordName: "retry-note", zoneID: zoneID)
+        let failedRecordID = CKRecord.ID(recordName: "failed-note", zoneID: zoneID)
+        let partialErrors: [AnyHashable: Error] = [
+            AnyHashable(retryRecordID): makeCloudKitError(.unknownItem),
+            AnyHashable(failedRecordID): makeCloudKitError(.permissionFailure),
+        ]
+        let partialFailure = makeCloudKitError(
+            .partialFailure,
+            userInfo: [CKPartialErrorsByItemIDKey: partialErrors]
+        )
+
+        let classification = CloudKitErrorClassifier.classifyRetriableSavePartialFailure(
+            partialFailure,
+            targetZoneID: zoneID,
+            pendingSaveNoteIDs: [retryRecordID.recordName, failedRecordID.recordName]
+        )
+
+        #expect(classification == .partiallyRecoverableUnknownItemSaves(noteIDs: [retryRecordID.recordName]))
+    }
+
+    @Test func cloudKitErrorClassifierLeavesUnhandledPartialSaveFailuresTerminal() {
+        let zoneID = CKRecordZone.ID(zoneName: "StickyNotes")
+        let failedRecordID = CKRecord.ID(recordName: "failed-note", zoneID: zoneID)
+        let partialErrors: [AnyHashable: Error] = [
+            AnyHashable(failedRecordID): makeCloudKitError(.permissionFailure)
+        ]
+        let partialFailure = makeCloudKitError(
+            .partialFailure,
+            userInfo: [CKPartialErrorsByItemIDKey: partialErrors]
+        )
+
+        let classification = CloudKitErrorClassifier.classifyRetriableSavePartialFailure(
+            partialFailure,
+            targetZoneID: zoneID,
+            pendingSaveNoteIDs: [failedRecordID.recordName]
+        )
+
+        #expect(classification == .unhandled)
+    }
+
+    @Test func cloudKitErrorClassifierClassifiesTerminalFailures() {
+        let error = makeCloudKitError(.permissionFailure)
+
+        let saveClassification = CloudKitErrorClassifier.classifyRecordSaveFailure(error)
+        let deleteClassification = CloudKitErrorClassifier.classifyRecordDeleteFailure(error)
+
+        #expect(saveClassification.kind == .terminal)
+        #expect(saveClassification.serverRecord == nil)
+        #expect(deleteClassification.kind == .terminal)
+    }
+
     @Test func cloudKitSendBatchTrackerFinalizesResolvedBatch() throws {
         var tracker = CloudKitSendBatchTracker()
         let savedNote = StickyNote(
@@ -1526,6 +1635,19 @@ private func temporaryStoreURL() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
         .appendingPathComponent("sticky-notes.json", isDirectory: false)
+}
+
+private func makeCloudKitError(
+    _ code: CKError.Code,
+    userInfo: [String: Any] = [:]
+) -> CKError {
+    CKError(
+        _nsError: NSError(
+            domain: CKError.errorDomain,
+            code: code.rawValue,
+            userInfo: userInfo
+        )
+    )
 }
 
 private func waitForSnapshot(

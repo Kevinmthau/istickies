@@ -120,7 +120,7 @@ If persisted content changed since the draft base and differs from the draft, th
 - `CloudKitSendBatchTracker`: owns active send-batch state, saved/deleted/conflict/retry bookkeeping, and result finalization.
 - `CloudKitErrorClassifier`: maps CloudKit errors into retry, conflict, missing zone, partial failure, and terminal failure categories.
 
-Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch tracking has been extracted into `CloudKitSendBatchTracker`, including active batch state, save/delete/conflict/retry bookkeeping, result finalization, and focused unit tests. Continue with CloudKit error classification next because the remaining sent-record handling still mixes error interpretation with service state mutation.
+Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch tracking has been extracted into `CloudKitSendBatchTracker`, including active batch state, save/delete/conflict/retry bookkeeping, result finalization, and focused unit tests. CloudKit error interpretation has been extracted into `CloudKitErrorClassifier`, covering missing-zone checks, sent-record save/delete outcomes, unknown-item retry handling, partial-failure recovery, and terminal failures. Continue with the larger service split or sync-orchestration extraction once the remaining smaller P1 correctness fixes are handled.
 
 **Expected payoff:** Smaller review surface, better tests, and safer changes to sync behavior.
 
@@ -347,7 +347,7 @@ Extract low-risk components from `StickyNotesCloudService.swift` without changin
 
 1. `StickyNoteRecordMapper` - complete.
 2. `CloudKitSendBatchTracker` - complete.
-3. `CloudKitErrorClassifier`
+3. `CloudKitErrorClassifier` - complete.
 
 These components can be unit-tested without live CloudKit and will make the later sync fixes easier to review.
 
@@ -417,4 +417,4 @@ Only after correctness is improved, consider normalizing store state into `notes
 
 ## Best next implementation prompt
 
-Extract the next CloudKit pure seam: move CloudKit error interpretation out of `StickyNotesCloudService.swift` into a focused `CloudKitErrorClassifier`, keep sync behavior unchanged, and add pure unit tests for missing-zone, conflict, unknown-item retry, partial-failure, and terminal failure classifications.
+Fix the macOS window sync mutation risk: update `MacStickyNoteWindowCoordinator.syncWindows(with:)` to collect windows or note IDs to close before iterating closures can mutate `windows` and `windowOrder`, preserve the existing active-drag frame suppression behavior, and run the macOS unit tests.

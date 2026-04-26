@@ -241,7 +241,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                 case .success:
                     zoneExistsRemotely = true
                 case let .failure(error):
-                    if isMissingZoneError(error) {
+                    if CloudKitErrorClassifier.isMissingZone(error) {
                         zoneExistsRemotely = false
                     } else {
                         throw error
@@ -315,7 +315,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             needsRemoteZoneSnapshotHydration = !issueMessages.isEmpty
             return issueMessages
         } catch {
-            guard isMissingZoneError(error) else {
+            guard CloudKitErrorClassifier.isMissingZone(error) else {
                 didHydrateRemoteZoneSnapshot = false
                 needsRemoteZoneSnapshotHydration = true
                 throw error
@@ -352,40 +352,34 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     }
 
     private func recoverRetriableSaves(from error: Error) -> Bool {
-        let nsError = error as NSError
-        guard let partialErrors = nsError.userInfo[CKPartialErrorsByItemIDKey] as? [AnyHashable: Error] else {
+        let pendingSaveNoteIDs = Set(pendingNotesByID.keys)
+        let classification = CloudKitErrorClassifier.classifyRetriableSavePartialFailure(
+            error,
+            targetZoneID: StickyNotesCloudKitConfig.zoneID,
+            pendingSaveNoteIDs: pendingSaveNoteIDs
+        )
+
+        let noteIDs: [String]
+        let recoveredAllFailures: Bool
+        switch classification {
+        case let .recoverableUnknownItemSaves(retriableNoteIDs):
+            noteIDs = retriableNoteIDs
+            recoveredAllFailures = true
+        case let .partiallyRecoverableUnknownItemSaves(retriableNoteIDs):
+            noteIDs = retriableNoteIDs
+            recoveredAllFailures = false
+        case .unhandled:
             return false
         }
 
-        var recoveredAnySave = false
-        var encounteredUnhandledError = false
-
-        for (itemID, itemError) in partialErrors {
-            guard let recordID = itemID as? CKRecord.ID else {
-                encounteredUnhandledError = true
-                continue
-            }
-
-            guard recordID.zoneID == StickyNotesCloudKitConfig.zoneID else {
-                encounteredUnhandledError = true
-                continue
-            }
-
-            let itemCKError = itemError as? CKError
-            guard itemCKError?.code == .unknownItem,
-                  let pendingNote = pendingNotesByID[recordID.recordName]
-            else {
-                encounteredUnhandledError = true
-                continue
-            }
-
+        for noteID in noteIDs {
+            guard let pendingNote = pendingNotesByID[noteID] else { return false }
             let retriableNote = pendingNote.resettingCloudKitSystemFields()
-            pendingNotesByID[recordID.recordName] = retriableNote
+            pendingNotesByID[noteID] = retriableNote
             sendBatchTracker.markPendingSaveForRetry(retriableNote)
-            recoveredAnySave = true
         }
 
-        return recoveredAnySave && !encounteredUnhandledError
+        return recoveredAllFailures
     }
 
     private func applyFetchedDatabaseChanges(_ event: CKSyncEngine.Event.FetchedDatabaseChanges) {
@@ -479,17 +473,18 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         for failedRecordSave in event.failedRecordSaves where failedRecordSave.record.recordID.zoneID == StickyNotesCloudKitConfig.zoneID {
             let recordID = failedRecordSave.record.recordID
             let noteID = recordID.recordName
+            let classification = CloudKitErrorClassifier.classifyRecordSaveFailure(failedRecordSave.error)
 
-            if failedRecordSave.error.code == .zoneNotFound || failedRecordSave.error.code == .userDeletedZone {
+            switch classification.kind {
+            case .missingZone:
                 didResolveZoneExistence = true
                 zoneExistsRemotely = false
-            }
-
-            if failedRecordSave.error.code == .serverRecordChanged {
+                sendBatchTracker.markFailure(classification.message)
+            case .conflict:
                 syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 pendingNotesByID.removeValue(forKey: noteID)
 
-                if let serverRecord = failedRecordSave.error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord,
+                if let serverRecord = classification.serverRecord,
                    let remoteNote = StickyNoteRecordMapper.note(from: serverRecord)
                 {
                     let cleanRemoteNote = remoteNote.markedClean()
@@ -498,50 +493,39 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                 } else if let remoteNote = remoteNotesByID[noteID] {
                     sendBatchTracker.markConflict(noteID: noteID, remoteNote: remoteNote)
                 } else {
-                    sendBatchTracker.markFailure(failedRecordSave.error.localizedDescription)
+                    sendBatchTracker.markFailure(classification.message)
                 }
-
-                continue
-            }
-
-            if failedRecordSave.error.code == .unknownItem {
+            case .unknownItemRetry:
                 if let pendingNote = pendingNotesByID[noteID] {
                     let retriableNote = pendingNote.resettingCloudKitSystemFields()
                     pendingNotesByID[noteID] = retriableNote
                     sendBatchTracker.markPendingSaveForRetry(retriableNote)
                 } else {
-                    sendBatchTracker.markFailure(failedRecordSave.error.localizedDescription)
+                    sendBatchTracker.markFailure(classification.message)
                 }
-
-                continue
+            case .terminal:
+                sendBatchTracker.markFailure(classification.message)
             }
-
-            sendBatchTracker.markFailure(failedRecordSave.error.localizedDescription)
         }
 
         for (recordID, error) in event.failedRecordDeletes where recordID.zoneID == StickyNotesCloudKitConfig.zoneID {
             let noteID = recordID.recordName
+            let classification = CloudKitErrorClassifier.classifyRecordDeleteFailure(error)
 
-            if error.code == .unknownItem {
+            switch classification.kind {
+            case .alreadyDeleted:
                 syncEngine.state.remove(pendingRecordZoneChanges: [.deleteRecord(recordID)])
                 remoteNotesByID.removeValue(forKey: noteID)
                 pendingNotesByID.removeValue(forKey: noteID)
                 sendBatchTracker.markDeleted(noteID: noteID)
-                continue
-            }
-
-            if error.code == .zoneNotFound || error.code == .userDeletedZone {
+            case .missingZone:
                 didResolveZoneExistence = true
                 zoneExistsRemotely = false
+                sendBatchTracker.markFailure(classification.message)
+            case .terminal:
+                sendBatchTracker.markFailure(classification.message)
             }
-
-            sendBatchTracker.markFailure(error.localizedDescription)
         }
-    }
-
-    private func isMissingZoneError(_ error: Error) -> Bool {
-        guard let ckError = error as? CKError else { return false }
-        return ckError.code == .zoneNotFound || ckError.code == .userDeletedZone
     }
 
     private func fetchRecords(query: CKQuery, zoneID: CKRecordZone.ID?) async throws -> CloudFetchedRecords {
