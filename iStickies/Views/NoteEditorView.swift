@@ -44,17 +44,34 @@ enum StickyTextEditorLayout {
 }
 
 enum StickyNoteTypography {
-    static let bodySize: CGFloat = 17
-    static let editorSize: CGFloat = 18
+    static let bodySize: CGFloat = 18
+    static let editorSize: CGFloat = 19
 
-    static let bodyFont: Font = .custom("SF Pro", size: bodySize, relativeTo: .body)
+    private static let handwrittenFontNames = [
+        "Noteworthy-Light",
+        "MarkerFelt-Thin",
+        "ChalkboardSE-Regular",
+        "BradleyHandITCTT-Bold"
+    ]
 
 #if os(macOS)
-    static let editorFont: NSFont = NSFont(name: "SF Pro", size: editorSize)
+    private static let handwrittenFontName: String = {
+        handwrittenFontNames.first { NSFont(name: $0, size: editorSize) != nil }
+            ?? NSFont.systemFont(ofSize: editorSize).fontName
+    }()
+
+    static let bodyFont: Font = .custom(handwrittenFontName, size: bodySize, relativeTo: .body)
+    static let editorFont: NSFont = NSFont(name: handwrittenFontName, size: editorSize)
         ?? .systemFont(ofSize: editorSize)
 #elseif os(iOS)
+    private static let handwrittenFontName: String = {
+        handwrittenFontNames.first { UIFont(name: $0, size: editorSize) != nil }
+            ?? UIFont.systemFont(ofSize: editorSize).fontName
+    }()
+
+    static let bodyFont: Font = .custom(handwrittenFontName, size: bodySize, relativeTo: .body)
     static let editorFont: UIFont = {
-        let font = UIFont(name: "SF Pro", size: editorSize)
+        let font = UIFont(name: handwrittenFontName, size: editorSize)
             ?? .systemFont(ofSize: editorSize)
         return UIFontMetrics(forTextStyle: .body).scaledFont(for: font)
     }()
