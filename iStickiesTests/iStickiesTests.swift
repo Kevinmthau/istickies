@@ -1453,6 +1453,52 @@ struct iStickiesTests {
         #expect(Set(snapshot.notes.map(\.id)) == Set([firstNoteID, secondNoteID]))
     }
 
+    @Test func storeMaintainsOrderedIDsAndLookupThroughTargetedMutations() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let olderNote = StickyNote(
+            id: "older-note",
+            content: "Older",
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            needsCloudUpload: false
+        )
+        let newerNote = StickyNote(
+            id: "newer-note",
+            content: "Newer",
+            createdAt: Date(timeIntervalSince1970: 30),
+            lastModified: Date(timeIntervalSince1970: 40),
+            needsCloudUpload: false
+        )
+        try await fileStore.save(StickyNotesSnapshot(notes: [olderNote, newerNote]))
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: MockCloudService(), autoLoad: false)
+
+        await store.load()
+
+        #expect(store.noteIDs == ["newer-note", "older-note"])
+        #expect(store.notes.map(\.id) == store.noteIDs)
+
+        let frame = StickyNoteFrame(x: 40, y: 60, width: 320, height: 280)
+        store.updatePreferredFrame(id: olderNote.id, frame: frame)
+
+        #expect(store.noteIDs == ["newer-note", "older-note"])
+        #expect(store.note(withID: olderNote.id)?.preferredFrame == frame)
+
+        store.updateContent(id: olderNote.id, content: "Older edited")
+
+        #expect(store.noteIDs.first == olderNote.id)
+        #expect(store.notes.map(\.id) == store.noteIDs)
+        #expect(store.notes(orderedBy: [newerNote.id, olderNote.id, "missing"]).map(\.id) == [
+            newerNote.id,
+            olderNote.id,
+        ])
+
+        store.deleteNote(id: newerNote.id)
+
+        #expect(store.note(withID: newerNote.id) == nil)
+        #expect(store.noteIDs == [olderNote.id])
+        #expect(store.notes.map(\.id) == [olderNote.id])
+    }
+
     @Test func newerRemoteVersionCreatesConflictCopy() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let sharedID = "shared-note"

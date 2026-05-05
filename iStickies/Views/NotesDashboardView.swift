@@ -142,7 +142,7 @@ struct MobileNotesSceneView: View {
                 Color(.systemGroupedBackground)
                     .ignoresSafeArea()
 
-                if store.notes.isEmpty {
+                if store.noteIDs.isEmpty {
                     ContentUnavailableView(
                         "No Notes",
                         systemImage: "note.text",
@@ -221,9 +221,9 @@ struct MobileNotesSceneView: View {
             }
         }
         .onAppear {
-            displayOrderIDs = store.notes.map(\.id)
+            displayOrderIDs = store.noteIDs
         }
-        .onChange(of: store.notes.map(\.id)) { _, ids in
+        .onChange(of: store.noteIDs) { _, ids in
             if let editingNoteID, !ids.contains(editingNoteID) {
                 self.editingNoteID = nil
             }
@@ -235,14 +235,14 @@ struct MobileNotesSceneView: View {
         }
         .onChange(of: editingNoteID) { _, newValue in
             if newValue == nil {
-                displayOrderIDs = store.notes.map(\.id)
+                displayOrderIDs = store.noteIDs
             }
         }
         .modifier(StickyNotesSyncModifier(store: store))
     }
 
     private var orderedNotes: [StickyNote] {
-        let latestIDs = store.notes.map(\.id)
+        let latestIDs = store.noteIDs
         let orderedIDs = StickyNoteDisplayOrder.reconciledIDs(
             currentIDs: displayOrderIDs,
             latestIDs: latestIDs,

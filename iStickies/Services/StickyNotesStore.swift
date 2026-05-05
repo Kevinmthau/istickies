@@ -29,13 +29,13 @@ enum StickyNoteDraftPersistenceResult: Equatable {
 final class StickyNotesStore: ObservableObject {
     private struct CommitOptions {
         var resortNotes = false
+        var resortNoteID: String?
         var syncDelay: TimeInterval?
     }
 
-    @Published private(set) var notes: [StickyNote] = [] {
-        didSet { notesByID = Dictionary(uniqueKeysWithValues: notes.map { ($0.id, $0) }) }
-    }
+    @Published private(set) var notes: [StickyNote] = []
     private var notesByID: [String: StickyNote] = [:]
+    private var orderedNoteIDs: [String] = []
     @Published private(set) var syncState: StickyNotesSyncState = .idle
     @Published private(set) var lastSuccessfulCloudSync: Date?
     @Published private(set) var hasFinishedInitialLoad = false
@@ -119,6 +119,10 @@ final class StickyNotesStore: ObservableObject {
         notesByID[id]
     }
 
+    var noteIDs: [String] {
+        orderedNoteIDs
+    }
+
     func notes(orderedBy ids: [String]) -> [StickyNote] {
         ids.compactMap { notesByID[$0] }
     }
@@ -127,9 +131,9 @@ final class StickyNotesStore: ObservableObject {
     func createNote() -> String {
         let note = StickyNote(color: .yellow)
         commitStateChange(
-            CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+            CommitOptions(resortNoteID: note.id, syncDelay: stickyNotesDefaultCloudSyncDelay)
         ) {
-            notes.append(note)
+            addStoredNote(note)
             return true
         }
         return note.id
@@ -139,7 +143,7 @@ final class StickyNotesStore: ObservableObject {
         mutateNote(
             id: id,
             touchModifiedAt: true,
-            commitOptions: CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+            commitOptions: CommitOptions(resortNoteID: id, syncDelay: stickyNotesDefaultCloudSyncDelay)
         ) { note in
             note.content = content
         }
@@ -151,9 +155,8 @@ final class StickyNotesStore: ObservableObject {
         content: String,
         expectedBaseContent: String
     ) -> StickyNoteDraftPersistenceResult {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return .missing }
+        guard let currentNote = notesByID[id] else { return .missing }
 
-        let currentNote = notes[index]
         guard currentNote.content != content else {
             return .persisted(primaryContent: currentNote.content)
         }
@@ -161,9 +164,9 @@ final class StickyNotesStore: ObservableObject {
         guard currentNote.content == expectedBaseContent else {
             let conflictCopy = makeDraftConflictCopy(from: currentNote, content: content)
             commitStateChange(
-                CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+                CommitOptions(resortNoteID: conflictCopy.id, syncDelay: stickyNotesDefaultCloudSyncDelay)
             ) {
-                notes.append(conflictCopy)
+                addStoredNote(conflictCopy)
                 return true
             }
             StickyNotesLog.sync.info("Editor draft conflict copy created")
@@ -176,7 +179,7 @@ final class StickyNotesStore: ObservableObject {
         mutateNote(
             id: id,
             touchModifiedAt: true,
-            commitOptions: CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+            commitOptions: CommitOptions(resortNoteID: id, syncDelay: stickyNotesDefaultCloudSyncDelay)
         ) { note in
             note.content = content
         }
@@ -187,7 +190,7 @@ final class StickyNotesStore: ObservableObject {
         mutateNote(
             id: id,
             touchModifiedAt: true,
-            commitOptions: CommitOptions(resortNotes: true, syncDelay: stickyNotesDefaultCloudSyncDelay)
+            commitOptions: CommitOptions(resortNoteID: id, syncDelay: stickyNotesDefaultCloudSyncDelay)
         ) { note in
             note.color = .yellow
         }
@@ -218,13 +221,14 @@ final class StickyNotesStore: ObservableObject {
     func openAllNotes() {
         commitStateChange {
             var changed = false
-            notes = notes.map { note in
-                guard !note.isOpen else { return note }
+
+            for id in orderedNoteIDs {
+                guard var note = notesByID[id], !note.isOpen else { continue }
                 changed = true
-                var copy = note
-                copy.isOpen = true
-                return copy
+                note.isOpen = true
+                notesByID[id] = note
             }
+
             return changed
         }
     }
@@ -245,9 +249,9 @@ final class StickyNotesStore: ObservableObject {
 
     func deleteNote(id: String) {
         commitStateChange(CommitOptions(syncDelay: 0.2)) {
-            guard notes.contains(where: { $0.id == id }) else { return false }
+            guard notesByID.removeValue(forKey: id) != nil else { return false }
 
-            notes.removeAll { $0.id == id }
+            orderedNoteIDs.removeAll { $0 == id }
             pendingDeletionIDs.insert(id)
             return true
         }
@@ -273,7 +277,7 @@ final class StickyNotesStore: ObservableObject {
             """
             Sync started localNoteCount: \(self.notes.count, privacy: .public) \
             pendingDeletionCount: \(self.pendingDeletionIDs.count, privacy: .public) \
-            dirtyNoteCount: \(self.notes.filter(\.needsCloudUpload).count, privacy: .public)
+            dirtyNoteCount: \(self.dirtyNoteCount, privacy: .public)
             """
         )
 
@@ -315,7 +319,7 @@ final class StickyNotesStore: ObservableObject {
                 """
                 Sync completed noteCount: \(self.notes.count, privacy: .public) \
                 pendingDeletionCount: \(self.pendingDeletionIDs.count, privacy: .public) \
-                dirtyNoteCount: \(self.notes.filter(\.needsCloudUpload).count, privacy: .public)
+                dirtyNoteCount: \(self.dirtyNoteCount, privacy: .public)
                 """
             )
 
@@ -335,7 +339,7 @@ final class StickyNotesStore: ObservableObject {
             StickyNotesLog.sync.error(
                 """
                 Sync failed pendingDeletionCount: \(self.pendingDeletionIDs.count, privacy: .public) \
-                dirtyNoteCount: \(self.notes.filter(\.needsCloudUpload).count, privacy: .public) \
+                dirtyNoteCount: \(self.dirtyNoteCount, privacy: .public) \
                 error: \(error.localizedDescription, privacy: .private)
                 """
             )
@@ -356,9 +360,8 @@ final class StickyNotesStore: ObservableObject {
         commitOptions: CommitOptions,
         mutation: (inout StickyNote) -> Void
     ) {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
+        guard let original = notesByID[id] else { return }
 
-        let original = notes[index]
         var updated = original
         mutation(&updated)
         if markNeedsCloudUpload {
@@ -370,27 +373,18 @@ final class StickyNotesStore: ObservableObject {
 
         guard updated != original else { return }
 
-        if commitOptions.resortNotes {
-            var updatedNotes = notes
-            updatedNotes[index] = updated
-            let sortedNotes = sortNotes(updatedNotes)
-            commitStateChange(
-                CommitOptions(resortNotes: false, syncDelay: commitOptions.syncDelay)
-            ) {
-                guard sortedNotes != notes else { return false }
-                notes = sortedNotes
-                return true
-            }
-        } else {
-            commitStateChange(commitOptions) {
-                notes[index] = updated
-                return true
-            }
+        commitStateChange(commitOptions) {
+            notesByID[id] = updated
+            return true
         }
     }
 
     private var hasPendingCloudChanges: Bool {
-        notes.contains(where: \.needsCloudUpload) || !pendingDeletionIDs.isEmpty
+        notesByID.values.contains(where: \.needsCloudUpload) || !pendingDeletionIDs.isEmpty
+    }
+
+    private var dirtyNoteCount: Int {
+        notesByID.values.filter(\.needsCloudUpload).count
     }
 
     private func requeueLoadedNotesIfNeeded(
@@ -419,13 +413,68 @@ final class StickyNotesStore: ObservableObject {
     }
 
     private func sortNotes(_ unsortedNotes: [StickyNote]) -> [StickyNote] {
-        unsortedNotes.sorted {
-            if $0.lastModified != $1.lastModified {
-                return $0.lastModified > $1.lastModified
+        unsortedNotes.sorted(by: shouldSortBefore)
+    }
+
+    private func shouldSortBefore(_ lhs: StickyNote, _ rhs: StickyNote) -> Bool {
+        if lhs.lastModified != rhs.lastModified {
+            return lhs.lastModified > rhs.lastModified
+        }
+
+        return lhs.createdAt > rhs.createdAt
+    }
+
+    private func sortedNoteIDs(_ ids: [String]) -> [String] {
+        ids.sorted { lhsID, rhsID in
+            guard let lhs = notesByID[lhsID], let rhs = notesByID[rhsID] else {
+                return lhsID < rhsID
             }
 
-            return $0.createdAt > $1.createdAt
+            return shouldSortBefore(lhs, rhs)
         }
+    }
+
+    private var orderedStoredNotes: [StickyNote] {
+        orderedNoteIDs.compactMap { notesByID[$0] }
+    }
+
+    private func addStoredNote(_ note: StickyNote) {
+        notesByID[note.id] = note
+        if !orderedNoteIDs.contains(note.id) {
+            orderedNoteIDs.append(note.id)
+        }
+    }
+
+    private func replaceStoredNotes(with newNotes: [StickyNote], sort: Bool) {
+        notesByID = Dictionary(uniqueKeysWithValues: newNotes.map { ($0.id, $0) })
+        orderedNoteIDs = newNotes.map(\.id)
+        if sort {
+            orderedNoteIDs = sortedNoteIDs(orderedNoteIDs)
+        }
+        publishStoredNotes()
+    }
+
+    private func resortStoredNote(id: String) {
+        guard notesByID[id] != nil else {
+            orderedNoteIDs.removeAll { $0 == id }
+            return
+        }
+
+        orderedNoteIDs.removeAll { $0 == id }
+        let insertionIndex = orderedNoteIDs.firstIndex { existingID in
+            guard let note = notesByID[id], let existingNote = notesByID[existingID] else {
+                return false
+            }
+
+            return shouldSortBefore(note, existingNote)
+        } ?? orderedNoteIDs.endIndex
+        orderedNoteIDs.insert(id, at: insertionIndex)
+    }
+
+    private func publishStoredNotes() {
+        let orderedNotes = orderedStoredNotes
+        guard notes != orderedNotes else { return }
+        notes = orderedNotes
     }
 
     private func makeDraftConflictCopy(from note: StickyNote, content: String) -> StickyNote {
@@ -453,11 +502,12 @@ final class StickyNotesStore: ObservableObject {
             )
         )
 
-        notes = sortNotes(
-            StickyNotesMergeEngine.mergeLoadedNotes(
-                currentNotes: notes,
+        replaceStoredNotes(
+            with: StickyNotesMergeEngine.mergeLoadedNotes(
+                currentNotes: orderedStoredNotes,
                 loadedNotes: loadedNotes
-            )
+            ),
+            sort: true
         )
         pendingDeletionIDs.formUnion(snapshot.pendingDeletionIDs)
 
@@ -477,10 +527,13 @@ final class StickyNotesStore: ObservableObject {
     ) {
         guard mutation() else { return }
 
-        if options.resortNotes {
-            notes = sortNotes(notes)
+        if let resortNoteID = options.resortNoteID {
+            resortStoredNote(id: resortNoteID)
+        } else if options.resortNotes {
+            orderedNoteIDs = sortedNoteIDs(orderedNoteIDs)
         }
 
+        publishStoredNotes()
         persistSnapshot()
 
         if let delay = options.syncDelay {
@@ -499,7 +552,7 @@ final class StickyNotesStore: ObservableObject {
         snapshotGeneration += 1
         let snapshotGeneration = snapshotGeneration
         let snapshot = StickyNotesSnapshot(
-            notes: notes,
+            notes: orderedStoredNotes,
             pendingDeletionIDs: Array(pendingDeletionIDs).sorted(),
             lastSuccessfulCloudSync: lastSuccessfulCloudSync,
             cloudKitStateSerializationData: cachedCloudPersistedState.stateSerializationData,
@@ -532,7 +585,7 @@ final class StickyNotesStore: ObservableObject {
 
     private var syncLocalState: StickyNotesSyncLocalState {
         StickyNotesSyncLocalState(
-            notes: notes,
+            notes: orderedStoredNotes,
             pendingDeletionIDs: pendingDeletionIDs
         )
     }
@@ -547,7 +600,7 @@ final class StickyNotesStore: ObservableObject {
         guard didChangeNotes || didChangePendingDeletions else { return }
 
         if didChangeNotes {
-            notes = sortedNotes
+            replaceStoredNotes(with: sortedNotes, sort: false)
         }
         if didChangePendingDeletions {
             pendingDeletionIDs = state.pendingDeletionIDs

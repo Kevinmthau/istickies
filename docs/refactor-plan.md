@@ -387,9 +387,19 @@ Remaining follow-up: `StickyNotesStore` is still large and owns persistence/writ
 
 ### Stage 5: Normalize state and reduce UI churn
 
-Status: not started.
+Status: partially implemented.
 
 Normalize store state into `notesByID` and ordered IDs. This is more invasive and should follow the sync safety and orchestration work.
+
+Completed work:
+
+1. `StickyNotesStore` now keeps `notesByID` plus ordered note IDs as the internal source of truth and publishes `notes` as a derived ordered snapshot for existing UI compatibility.
+2. Targeted note mutations update ID-indexed storage directly instead of searching and rewriting the published array first.
+3. Note creation, conflict-copy creation, content/color edits, frame/window-state changes, `openAllNotes`, deletion, load, persistence, and sync application now route through the normalized storage helpers.
+4. The mobile dashboard and macOS window ordering paths use `store.noteIDs` instead of rebuilding ID arrays from `store.notes`.
+5. Added focused store coverage for ordered IDs, lookup, non-sorting frame updates, content-edit reordering, custom ordered access, and deletion.
+
+Remaining follow-up: continue narrowing publication boundaries so one note edit does not require every subscriber to consume a full `[StickyNote]` snapshot, and coalesce local snapshot writes more aggressively during sustained editing.
 
 ## Performance plan
 
@@ -397,8 +407,10 @@ Normalize store state into `notesByID` and ordered IDs. This is more invasive an
 
 1. Collect macOS windows to close before mutating the coordinator dictionary.
 2. Avoid rebuilding note dictionaries in dashboard/window paths when the store already maintains `notesByID`.
+   - Status: implemented for dashboard ordered lookups and macOS window ordering; `syncWindows(with:)` still builds a note dictionary from the published snapshot it receives.
 3. Coalesce local snapshot writes more aggressively during editing.
 4. Avoid resorting on every content flush unless order actually changes.
+   - Status: partially implemented. Targeted mutations now reposition a changed note ID instead of sorting and rebuilding the whole note array first.
 
 ### Deeper work
 
@@ -441,4 +453,4 @@ Normalize store state into `notesByID` and ordered IDs. This is more invasive an
 
 ## Best next implementation prompt
 
-Normalize state and reduce UI churn: refactor `StickyNotesStore` toward ID-indexed storage plus ordered note IDs, keep published updates narrower where practical, and preserve existing persistence/sync behavior with focused tests around note ordering, editing, and window sync.
+Continue Stage 5 UI-churn reduction: now that `StickyNotesStore` has ID-indexed storage plus ordered IDs internally, introduce narrower store observation/access patterns for note-specific editor/window updates and coalesce local snapshot writes during sustained editing while preserving existing sync and persistence semantics.

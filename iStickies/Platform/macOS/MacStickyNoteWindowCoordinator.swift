@@ -45,7 +45,7 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
     func showAllNotes() {
         store.openAllNotes()
         syncWindows(with: store.notes)
-        bringAllWindowsToFront(prioritizing: windowOrder.last ?? store.notes.first?.id)
+        bringAllWindowsToFront(prioritizing: windowOrder.last ?? store.noteIDs.first)
     }
 
     func deleteFocusedNote() {
@@ -141,7 +141,7 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
         let activeIDs = Set(windows.keys)
         windowOrder = windowOrder.filter { activeIDs.contains($0) }
 
-        let missingIDs = store.notes.map(\.id).filter { windows[$0] != nil && !windowOrder.contains($0) }
+        let missingIDs = store.noteIDs.filter { windows[$0] != nil && !windowOrder.contains($0) }
         windowOrder.append(contentsOf: missingIDs)
 
         return windowOrder.compactMap { windows[$0] }
