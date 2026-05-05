@@ -30,7 +30,7 @@ struct iStickiesApp: App {
 #else
         WindowGroup("Stickies") {
             MobileNotesSceneView()
-                .environmentObject(store)
+                .stickyNotesStore(store)
         }
 #endif
     }
@@ -65,8 +65,8 @@ final class StickyNotesAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 private struct StickyNotesCommands: Commands {
-    @ObservedObject var store: StickyNotesStore
-    @ObservedObject var windowCoordinator: MacStickyNoteWindowCoordinator
+    let store: StickyNotesStore
+    let windowCoordinator: MacStickyNoteWindowCoordinator
 
     var body: some Commands {
         CommandMenu("Stickies") {

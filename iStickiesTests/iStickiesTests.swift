@@ -1538,6 +1538,66 @@ struct iStickiesTests {
         _ = cancellable
     }
 
+    @Test func listObservationPublishesOnlyOrderedIDChanges() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let olderNote = StickyNote(
+            id: "older-note",
+            content: "Older",
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            needsCloudUpload: false
+        )
+        let newerNote = StickyNote(
+            id: "newer-note",
+            content: "Newer",
+            createdAt: Date(timeIntervalSince1970: 30),
+            lastModified: Date(timeIntervalSince1970: 40),
+            needsCloudUpload: false
+        )
+        try await fileStore.save(StickyNotesSnapshot(notes: [olderNote, newerNote]))
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: MockCloudService(), autoLoad: false)
+
+        await store.load()
+
+        let listObservation = store.noteListObservation()
+        var observedNoteIDs: [[String]] = []
+        let cancellable = listObservation.$noteIDs
+            .dropFirst()
+            .sink { ids in
+                observedNoteIDs.append(ids)
+            }
+
+        store.updatePreferredFrame(
+            id: olderNote.id,
+            frame: StickyNoteFrame(x: 40, y: 60, width: 320, height: 280)
+        )
+        #expect(observedNoteIDs.isEmpty)
+
+        store.updateContent(id: olderNote.id, content: "Older edited")
+        #expect(observedNoteIDs == [[olderNote.id, newerNote.id]])
+
+        _ = cancellable
+    }
+
+    @Test func statusObservationTracksSyncErrorsAndClearing() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let cloudService = MockCloudService(
+            remoteSnapshotCompleteness: .unavailable("CloudKit fetch failed.")
+        )
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: cloudService, autoLoad: false)
+        let statusObservation = store.syncStatusObservation()
+
+        await store.load()
+        #expect(statusObservation.hasFinishedInitialLoad)
+
+        await store.syncNow()
+        #expect(statusObservation.syncState == .failed("CloudKit fetch failed."))
+        #expect(statusObservation.lastErrorMessage == "Cloud sync failed: CloudKit fetch failed.")
+
+        store.clearLastErrorMessage()
+        #expect(statusObservation.lastErrorMessage == nil)
+    }
+
     @Test func contentEditsCoalesceSnapshotPersistenceUntilFlush() async throws {
         let fileURL = temporaryStoreURL()
         let fileStore = StickyNotesFileStore(fileURL: fileURL)

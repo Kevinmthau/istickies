@@ -401,8 +401,10 @@ Completed work:
 6. `StickyNotesStore.notes` is now a compatibility snapshot instead of the broad published update surface. The store publishes narrower ordered-ID and open-ID streams for list/window lifecycle work.
 7. Added note-specific `StickyNoteObservation` objects and moved editor, dashboard card, and macOS sticky-window updates onto those note-scoped observations.
 8. Content-edit snapshot persistence is now coalesced during sustained editing, while `flushPendingPersistence()` forces any delayed write before backgrounding or tests reload local state.
+9. Added list/status observation projections so the mobile scene and sync alert observe ordered IDs and sync/error state without subscribing to the full store object.
+10. Replaced remaining environment-object store lookups in editor/window/mobile wrappers with a plain SwiftUI environment reference, keeping note content views on note-scoped observations and commands on direct store/coordinator references.
 
-Remaining follow-up: keep reducing remaining broad `StickyNotesStore` observation in wrapper views, and decide whether the compatibility `notes` snapshot should remain as a read-only convenience or be replaced by narrower accessors everywhere.
+Remaining follow-up: decide whether the compatibility `notes` snapshot should remain as a read-only convenience for tests/internal diagnostics or be replaced by narrower accessors everywhere. Remaining broad store observation is limited to app ownership and macOS lifecycle Combine subscriptions.
 
 ## Performance plan
 
@@ -421,7 +423,7 @@ Remaining follow-up: keep reducing remaining broad `StickyNotesStore` observatio
 1. Seed or persist the CloudKit remote cache to avoid full-zone hydration on every cold launch.
 2. Normalize store state into ID-indexed storage plus ordered IDs.
 3. Publish narrower state changes so one note edit does not make every subscriber recompute.
-   - Status: partially implemented with note-scoped observations plus ordered/open ID publishers.
+   - Status: partially implemented with note-scoped observations, list/status observation projections, and ordered/open ID publishers.
 4. Move conflict/version metadata away from client-clock-only `lastModified`.
 
 ## Hardening plan
@@ -458,4 +460,4 @@ Remaining follow-up: keep reducing remaining broad `StickyNotesStore` observatio
 
 ## Best next implementation prompt
 
-Continue Stage 5 cleanup: audit the remaining `StickyNotesStore` environment-object wrappers and compatibility `notes` consumers, then replace any broad observation that is not needed for sync/status/list lifecycle with note-scoped observations or ordered-ID accessors.
+Finish Stage 5 API cleanup: audit the remaining compatibility `store.notes` consumers in tests/internal diagnostics, decide whether `notes` should stay as a read-only convenience or be replaced by narrower accessors, then move to the P1 App Store Connect workflow hardening.

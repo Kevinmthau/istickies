@@ -79,7 +79,7 @@ enum StickyNoteTypography {
 }
 
 struct StickyNoteEditor: View {
-    @EnvironmentObject private var store: StickyNotesStore
+    @Environment(\.stickyNotesStore) private var store
 
     let noteID: String
     let autoFocusOnAppear: Bool
@@ -89,22 +89,27 @@ struct StickyNoteEditor: View {
         self.autoFocusOnAppear = autoFocusOnAppear
     }
 
+    @ViewBuilder
     var body: some View {
-        StickyNoteEditorContent(
-            noteID: noteID,
-            noteObservation: store.noteObservation(withID: noteID),
-            autoFocusOnAppear: autoFocusOnAppear,
-            readPersistedContent: {
-                store.note(withID: noteID)?.content
-            },
-            persistDraftContent: { content, expectedBaseContent in
-                store.updateContent(
-                    id: noteID,
-                    content: content,
-                    expectedBaseContent: expectedBaseContent
-                )
-            }
-        )
+        if let store {
+            StickyNoteEditorContent(
+                noteID: noteID,
+                noteObservation: store.noteObservation(withID: noteID),
+                autoFocusOnAppear: autoFocusOnAppear,
+                readPersistedContent: {
+                    store.note(withID: noteID)?.content
+                },
+                persistDraftContent: { content, expectedBaseContent in
+                    store.updateContent(
+                        id: noteID,
+                        content: content,
+                        expectedBaseContent: expectedBaseContent
+                    )
+                }
+            )
+        } else {
+            ContentUnavailableView("Notes Unavailable", systemImage: "note.text")
+        }
     }
 }
 
@@ -201,7 +206,7 @@ private struct StickyNoteEditorContent: View {
 }
 
 struct NoteEditorView: View {
-    @EnvironmentObject private var store: StickyNotesStore
+    @Environment(\.stickyNotesStore) private var store
 
     let noteID: String
     let autoFocusOnAppear: Bool
@@ -211,12 +216,17 @@ struct NoteEditorView: View {
         self.autoFocusOnAppear = autoFocusOnAppear
     }
 
+    @ViewBuilder
     var body: some View {
-        NoteEditorContent(
-            noteID: noteID,
-            noteObservation: store.noteObservation(withID: noteID),
-            autoFocusOnAppear: autoFocusOnAppear
-        )
+        if let store {
+            NoteEditorContent(
+                noteID: noteID,
+                noteObservation: store.noteObservation(withID: noteID),
+                autoFocusOnAppear: autoFocusOnAppear
+            )
+        } else {
+            ContentUnavailableView("Notes Unavailable", systemImage: "note.text")
+        }
     }
 }
 

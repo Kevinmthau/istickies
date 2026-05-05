@@ -40,10 +40,18 @@ final class StickyNotesStore: ObservableObject {
     private var orderedNoteIDs: [String] = []
     @Published private(set) var noteIDs: [String] = []
     @Published private(set) var openNoteIDs: [String] = []
-    @Published private(set) var syncState: StickyNotesSyncState = .idle
-    @Published private(set) var lastSuccessfulCloudSync: Date?
-    @Published private(set) var hasFinishedInitialLoad = false
-    @Published var lastErrorMessage: String?
+    @Published private(set) var syncState: StickyNotesSyncState = .idle {
+        didSet { publishStatusObservation() }
+    }
+    @Published private(set) var lastSuccessfulCloudSync: Date? {
+        didSet { publishStatusObservation() }
+    }
+    @Published private(set) var hasFinishedInitialLoad = false {
+        didSet { publishStatusObservation() }
+    }
+    @Published private(set) var lastErrorMessage: String? {
+        didSet { publishStatusObservation() }
+    }
 
     private let fileStore: StickyNotesFileStore
     private let cloudService: any StickyNotesCloudSyncing
@@ -59,6 +67,8 @@ final class StickyNotesStore: ObservableObject {
     private var cachedCloudPersistedState = StickyNotesCloudPersistedState()
     private var hasLocalLoadFailure = false
     private var noteObservations: [String: StickyNoteObservation] = [:]
+    private let noteListObservationStorage = StickyNotesListObservation()
+    private let statusObservationStorage = StickyNotesStatusObservation()
 
     init(
         fileStore: StickyNotesFileStore = StickyNotesFileStore(),
@@ -129,6 +139,16 @@ final class StickyNotesStore: ObservableObject {
         ids.compactMap { notesByID[$0] }
     }
 
+    func noteListObservation() -> StickyNotesListObservation {
+        noteListObservationStorage.update(noteIDs: noteIDs, openNoteIDs: openNoteIDs)
+        return noteListObservationStorage
+    }
+
+    func syncStatusObservation() -> StickyNotesStatusObservation {
+        publishStatusObservation()
+        return statusObservationStorage
+    }
+
     func noteObservation(withID id: String) -> StickyNoteObservation {
         if let observation = noteObservations[id] {
             observation.update(note: notesByID[id])
@@ -138,6 +158,10 @@ final class StickyNotesStore: ObservableObject {
         let observation = StickyNoteObservation(noteID: id, note: notesByID[id])
         noteObservations[id] = observation
         return observation
+    }
+
+    func clearLastErrorMessage() {
+        lastErrorMessage = nil
     }
 
     @discardableResult
@@ -512,6 +536,17 @@ final class StickyNotesStore: ObservableObject {
         if openNoteIDs != orderedOpenNoteIDs {
             openNoteIDs = orderedOpenNoteIDs
         }
+
+        noteListObservationStorage.update(noteIDs: noteIDs, openNoteIDs: openNoteIDs)
+    }
+
+    private func publishStatusObservation() {
+        statusObservationStorage.update(
+            syncState: syncState,
+            lastSuccessfulCloudSync: lastSuccessfulCloudSync,
+            hasFinishedInitialLoad: hasFinishedInitialLoad,
+            lastErrorMessage: lastErrorMessage
+        )
     }
 
     private func publishChangedNoteObservations(comparedTo previousNotesByID: [String: StickyNote]) {

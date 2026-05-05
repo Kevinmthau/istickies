@@ -202,7 +202,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         } ?? NSRect(origin: origin, size: Self.defaultContentSize)
 
         let hostingController = NSHostingController(
-            rootView: NoteEditorView(noteID: note.id).environmentObject(store)
+            rootView: NoteEditorView(noteID: note.id).stickyNotesStore(store)
         )
 
         super.init(

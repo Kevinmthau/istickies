@@ -108,8 +108,15 @@ struct HomeScreenStickyNoteEditorCardView: View {
 }
 
 private struct StickyNotesSyncModifier: ViewModifier {
-    @ObservedObject var store: StickyNotesStore
     @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var statusObservation: StickyNotesStatusObservation
+
+    let store: StickyNotesStore
+
+    init(store: StickyNotesStore, statusObservation: StickyNotesStatusObservation) {
+        self.store = store
+        self._statusObservation = ObservedObject(wrappedValue: statusObservation)
+    }
 
     func body(content: Content) -> some View {
         content
@@ -121,23 +128,43 @@ private struct StickyNotesSyncModifier: ViewModifier {
                 }
             }
             .alert("Sync Error", isPresented: syncErrorBinding) {
-                Button("OK") { store.lastErrorMessage = nil }
+                Button("OK") { store.clearLastErrorMessage() }
             } message: {
-                Text(store.lastErrorMessage ?? "")
+                Text(statusObservation.lastErrorMessage ?? "")
             }
     }
 
     private var syncErrorBinding: Binding<Bool> {
         Binding(
-            get: { store.lastErrorMessage != nil },
-            set: { if !$0 { store.lastErrorMessage = nil } }
+            get: { statusObservation.lastErrorMessage != nil },
+            set: { if !$0 { store.clearLastErrorMessage() } }
         )
     }
 }
 
 #if !os(macOS)
 struct MobileNotesSceneView: View {
-    @EnvironmentObject private var store: StickyNotesStore
+    @Environment(\.stickyNotesStore) private var store
+
+    @ViewBuilder
+    var body: some View {
+        if let store {
+            MobileNotesSceneContent(
+                store: store,
+                noteListObservation: store.noteListObservation(),
+                statusObservation: store.syncStatusObservation()
+            )
+        } else {
+            ContentUnavailableView("Notes Unavailable", systemImage: "note.text")
+        }
+    }
+}
+
+private struct MobileNotesSceneContent: View {
+    let store: StickyNotesStore
+    let statusObservation: StickyNotesStatusObservation
+
+    @ObservedObject private var noteListObservation: StickyNotesListObservation
 
     @State private var editingNoteID: String?
     @State private var displayOrderIDs: [String] = []
@@ -148,13 +175,23 @@ struct MobileNotesSceneView: View {
         count: 2
     )
 
+    init(
+        store: StickyNotesStore,
+        noteListObservation: StickyNotesListObservation,
+        statusObservation: StickyNotesStatusObservation
+    ) {
+        self.store = store
+        self.statusObservation = statusObservation
+        self._noteListObservation = ObservedObject(wrappedValue: noteListObservation)
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color(.systemGroupedBackground)
                     .ignoresSafeArea()
 
-                if store.noteIDs.isEmpty {
+                if noteListObservation.noteIDs.isEmpty {
                     ContentUnavailableView(
                         "No Notes",
                         systemImage: "note.text",
@@ -237,9 +274,9 @@ struct MobileNotesSceneView: View {
             }
         }
         .onAppear {
-            displayOrderIDs = store.noteIDs
+            displayOrderIDs = noteListObservation.noteIDs
         }
-        .onChange(of: store.noteIDs) { _, ids in
+        .onChange(of: noteListObservation.noteIDs) { _, ids in
             if let editingNoteID, !ids.contains(editingNoteID) {
                 self.editingNoteID = nil
             }
@@ -251,14 +288,14 @@ struct MobileNotesSceneView: View {
         }
         .onChange(of: editingNoteID) { _, newValue in
             if newValue == nil {
-                displayOrderIDs = store.noteIDs
+                displayOrderIDs = noteListObservation.noteIDs
             }
         }
-        .modifier(StickyNotesSyncModifier(store: store))
+        .modifier(StickyNotesSyncModifier(store: store, statusObservation: statusObservation))
     }
 
     private var orderedNoteIDs: [String] {
-        let latestIDs = store.noteIDs
+        let latestIDs = noteListObservation.noteIDs
         return StickyNoteDisplayOrder.reconciledIDs(
             currentIDs: displayOrderIDs,
             latestIDs: latestIDs,
