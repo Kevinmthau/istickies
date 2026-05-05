@@ -72,7 +72,8 @@ enum StickyNoteRecordMapper {
             isOpen: true,
             preferredFrame: nil,
             needsCloudUpload: false,
-            cloudKitSystemFieldsData: record.encodedSystemFieldsData()
+            cloudKitSystemFieldsData: record.encodedSystemFieldsData(),
+            cloudRevision: record.recordChangeTag
         )
     }
 

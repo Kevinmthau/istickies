@@ -248,9 +248,7 @@ struct MobileNotesSceneView: View {
             latestIDs: latestIDs,
             preserveCurrentOrder: editingNoteID != nil
         )
-        let notesByID = Dictionary(uniqueKeysWithValues: store.notes.map { ($0.id, $0) })
-
-        return orderedIDs.compactMap { notesByID[$0] }
+        return store.notes(orderedBy: orderedIDs)
     }
 
     private var deleteDialogBinding: Binding<Bool> {

@@ -49,7 +49,8 @@ final class StickyNotesStore: ObservableObject {
     private var scheduledSyncTask: Task<Void, Never>?
     private var persistenceTask: Task<Void, Never>?
     private var snapshotGeneration = 0
-    private var cachedCloudKitStateSerializationData: Data?
+    private var cachedCloudPersistedState = StickyNotesCloudPersistedState()
+    private var hasLocalLoadFailure = false
 
     init(
         fileStore: StickyNotesFileStore = StickyNotesFileStore(),
@@ -84,16 +85,26 @@ final class StickyNotesStore: ObservableObject {
 
         do {
             let snapshot = try await fileStore.load()
-            cachedCloudKitStateSerializationData = snapshot.cloudKitStateSerializationData
-            await cloudService.restore(stateSerializationData: snapshot.cloudKitStateSerializationData)
+            cachedCloudPersistedState = StickyNotesCloudPersistedState(
+                stateSerializationData: snapshot.cloudKitStateSerializationData,
+                accountIdentifier: snapshot.cloudAccountIdentifier,
+                remoteNotes: snapshot.cloudRemoteCache
+            )
+            await cloudService.restore(persistedState: cachedCloudPersistedState)
             applyLoadedSnapshot(snapshot)
         } catch {
+            hasLocalLoadFailure = true
+            syncState = .failed(error.localizedDescription)
             lastErrorMessage = "Failed to restore notes locally: \(error.localizedDescription)"
         }
     }
 
     func note(withID id: String) -> StickyNote? {
         notesByID[id]
+    }
+
+    func notes(orderedBy ids: [String]) -> [StickyNote] {
+        ids.compactMap { notesByID[$0] }
     }
 
     @discardableResult
@@ -226,7 +237,7 @@ final class StickyNotesStore: ObservableObject {
     }
 
     func syncNow() async {
-        guard hasLoaded, !isSynchronizing else { return }
+        guard hasLoaded, !isSynchronizing, !hasLocalLoadFailure else { return }
 
         isSynchronizing = true
         syncState = .syncing
@@ -239,7 +250,11 @@ final class StickyNotesStore: ObservableObject {
                 pendingDeletionIDs: pendingDeletionIDs,
                 remoteSnapshotCompleteness: remoteSnapshot.completeness
             )
-            let mergedNotes = enforceYellowNotes(mergeOutcome.notes)
+            var mergedNotes = enforceYellowNotes(mergeOutcome.notes)
+            if remoteSnapshot.completeness.shouldReuploadLocalNotes {
+                mergedNotes = resetCloudStateForRemoteReset(mergedNotes)
+                pendingDeletionIDs.removeAll()
+            }
             if mergedNotes != notes {
                 notes = sortNotes(mergedNotes)
                 persistSnapshot()
@@ -271,7 +286,7 @@ final class StickyNotesStore: ObservableObject {
             }
 
             lastSuccessfulCloudSync = Date()
-            cachedCloudKitStateSerializationData = await cloudService.currentStateSerializationData()
+            cachedCloudPersistedState = await cloudService.currentPersistedState()
             lastErrorMessage = nil
             syncState = .idle
             persistSnapshot()
@@ -281,7 +296,7 @@ final class StickyNotesStore: ObservableObject {
             }
         } catch {
             syncState = .failed(error.localizedDescription)
-            cachedCloudKitStateSerializationData = await cloudService.currentStateSerializationData()
+            cachedCloudPersistedState = await cloudService.currentPersistedState()
             lastErrorMessage = "Cloud sync failed: \(error.localizedDescription)"
             persistSnapshot()
 
@@ -314,9 +329,22 @@ final class StickyNotesStore: ObservableObject {
 
         guard updated != original else { return }
 
-        commitStateChange(commitOptions) {
-            notes[index] = updated
-            return true
+        if commitOptions.resortNotes {
+            var updatedNotes = notes
+            updatedNotes[index] = updated
+            let sortedNotes = sortNotes(updatedNotes)
+            commitStateChange(
+                CommitOptions(resortNotes: false, syncDelay: commitOptions.syncDelay)
+            ) {
+                guard sortedNotes != notes else { return false }
+                notes = sortedNotes
+                return true
+            }
+        } else {
+            commitStateChange(commitOptions) {
+                notes[index] = updated
+                return true
+            }
         }
     }
 
@@ -335,6 +363,12 @@ final class StickyNotesStore: ObservableObject {
             var copy = note
             copy.needsCloudUpload = true
             return copy
+        }
+    }
+
+    private func resetCloudStateForRemoteReset(_ notes: [StickyNote]) -> [StickyNote] {
+        notes.map { note in
+            note.resettingCloudKitSystemFields()
         }
     }
 
@@ -379,6 +413,7 @@ final class StickyNotesStore: ObservableObject {
                 requeueLoadedNotesIfNeeded(
                     snapshot.notes,
                     needsCloudBootstrap: snapshot.cloudKitStateSerializationData == nil
+                        && snapshot.cloudAccountIdentifier == nil
                 )
             )
         )
@@ -419,13 +454,17 @@ final class StickyNotesStore: ObservableObject {
     }
 
     private func persistSnapshot() {
+        guard !hasLocalLoadFailure else { return }
+
         snapshotGeneration += 1
         let snapshotGeneration = snapshotGeneration
         let snapshot = StickyNotesSnapshot(
             notes: notes,
             pendingDeletionIDs: Array(pendingDeletionIDs).sorted(),
             lastSuccessfulCloudSync: lastSuccessfulCloudSync,
-            cloudKitStateSerializationData: cachedCloudKitStateSerializationData
+            cloudKitStateSerializationData: cachedCloudPersistedState.stateSerializationData,
+            cloudAccountIdentifier: cachedCloudPersistedState.accountIdentifier,
+            cloudRemoteCache: cachedCloudPersistedState.remoteNotes
         )
         let previousPersistenceTask = persistenceTask
         let fileStore = fileStore

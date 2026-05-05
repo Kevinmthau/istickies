@@ -44,6 +44,33 @@ struct iStickiesTests {
         #expect(normalizedRemoteNotes.first?.color == .yellow)
     }
 
+    @Test func successfulSyncPersistsRemoteCacheForColdLaunchRestore() async throws {
+        let fileURL = temporaryStoreURL()
+        let fileStore = StickyNotesFileStore(fileURL: fileURL)
+        let remoteNote = StickyNote(
+            id: "remote-note",
+            content: "Remote note",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([1]),
+            cloudRevision: "server-revision"
+        )
+        let cloudService = MockCloudService(remoteNotes: [remoteNote])
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: cloudService, autoLoad: false)
+
+        await store.load()
+        await store.syncNow()
+        await store.flushPendingPersistence()
+
+        let persistedSnapshot = try await StickyNotesFileStore(fileURL: fileURL).load()
+        #expect(persistedSnapshot.cloudRemoteCache.map(\.id) == [remoteNote.id])
+        #expect(persistedSnapshot.cloudRemoteCache.first?.cloudRevision == "server-revision")
+    }
+
     @Test func unavailableCloudSnapshotDoesNotDeleteCleanLocalNotes() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let previousSyncDate = Date(timeIntervalSince1970: 30)
@@ -258,6 +285,94 @@ struct iStickiesTests {
         #expect(store.lastSuccessfulCloudSync == previousSyncDate)
     }
 
+    @Test func sameAccountRemoteResetReuploadsCleanLocalNotes() async throws {
+        let fileURL = temporaryStoreURL()
+        let fileStore = StickyNotesFileStore(fileURL: fileURL)
+        let previousSyncDate = Date(timeIntervalSince1970: 30)
+        let localNote = StickyNote(
+            id: "local-note",
+            content: "Clean local note",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([9]),
+            cloudRevision: "old-zone-revision"
+        )
+        try await fileStore.save(
+            StickyNotesSnapshot(
+                notes: [localNote],
+                pendingDeletionIDs: ["already-gone"],
+                lastSuccessfulCloudSync: previousSyncDate,
+                cloudKitStateSerializationData: Data([1]),
+                cloudAccountIdentifier: "same-account"
+            )
+        )
+        let cloudService = MockCloudService(
+            remoteSnapshotCompleteness: .remoteReset("CloudKit zone was reset.")
+        )
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: cloudService, autoLoad: false)
+
+        await store.load()
+        await store.syncNow()
+        await store.flushPendingPersistence()
+
+        let uploadedNote = try #require(await cloudService.snapshot().first)
+        #expect(uploadedNote.id == localNote.id)
+        #expect(uploadedNote.content == localNote.content)
+        #expect(store.note(withID: localNote.id)?.needsCloudUpload == false)
+
+        let persistedSnapshot = try await StickyNotesFileStore(fileURL: fileURL).load()
+        #expect(persistedSnapshot.pendingDeletionIDs.isEmpty)
+        #expect(persistedSnapshot.lastSuccessfulCloudSync != previousSyncDate)
+    }
+
+    @Test func corruptPrimarySnapshotLoadsBackupAndQuarantinesPrimary() async throws {
+        let fileURL = temporaryStoreURL()
+        let fileStore = StickyNotesFileStore(fileURL: fileURL)
+        let note = StickyNote(id: "backup-note", content: "Recovered from backup", needsCloudUpload: false)
+        try await fileStore.save(StickyNotesSnapshot(notes: [note]))
+        try Data("not json".utf8).write(to: fileURL, options: .atomic)
+
+        let loadedSnapshot = try await StickyNotesFileStore(fileURL: fileURL).load()
+
+        #expect(loadedSnapshot.notes.map(\.id) == [note.id])
+        let parentURL = fileURL.deletingLastPathComponent()
+        let siblingNames = try FileManager.default.contentsOfDirectory(atPath: parentURL.path)
+        #expect(siblingNames.contains { $0.hasPrefix("sticky-notes.json.corrupt-") })
+    }
+
+    @Test func unrecoverableLocalSnapshotBlocksEmptySyncAndPersistence() async throws {
+        let fileURL = temporaryStoreURL()
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try Data("not json".utf8).write(to: fileURL, options: .atomic)
+        let cloudService = MockCloudService()
+        let store = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: fileURL),
+            cloudService: cloudService,
+            autoLoad: false
+        )
+
+        await store.load()
+        store.createNote()
+        await store.syncNow()
+        await store.flushPendingPersistence()
+
+        #expect(FileManager.default.fileExists(atPath: fileURL.path) == false)
+        let remoteNotes = await cloudService.snapshot()
+        #expect(remoteNotes.isEmpty)
+        guard case .failed = store.syncState else {
+            Issue.record("Expected failed sync state after unrecoverable local load")
+            return
+        }
+    }
+
     @Test func loadNormalizesSavedNotesToYellow() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let storedNote = StickyNote(
@@ -286,6 +401,28 @@ struct iStickiesTests {
         #expect(store.notes.count == 1)
         #expect(store.notes.first?.color == .yellow)
         #expect(store.notes.first?.needsCloudUpload == true)
+    }
+
+    @Test func snapshotDecodesLegacyFilesWithoutNewCloudStateFields() throws {
+        let legacyJSON = """
+        {
+          "notes" : [],
+          "pendingDeletionIDs" : [],
+          "lastSuccessfulCloudSync" : null,
+          "cloudKitStateSerializationData" : null
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let snapshot = try decoder.decode(
+            StickyNotesSnapshot.self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        #expect(snapshot.schemaVersion == 1)
+        #expect(snapshot.cloudAccountIdentifier == nil)
+        #expect(snapshot.cloudRemoteCache.isEmpty)
     }
 
     @Test func cloudKitRecordWithoutColorDefaultsToYellow() throws {
@@ -1182,6 +1319,83 @@ struct iStickiesTests {
         #expect(hasConflictCopy)
     }
 
+    @Test func changedCloudRevisionCreatesConflictEvenWhenRemoteClockIsOlder() {
+        let sharedID = "shared-note"
+        let localNote = StickyNote(
+            id: sharedID,
+            content: "Local draft",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 1_000),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: Data([1]),
+            cloudRevision: "base-revision"
+        )
+        let remoteNote = StickyNote(
+            id: sharedID,
+            content: "Remote edit",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([2]),
+            cloudRevision: "newer-server-revision"
+        )
+
+        let outcome = StickyNotesMergeEngine.merge(
+            localNotes: [localNote],
+            remoteNotes: [remoteNote],
+            pendingDeletionIDs: []
+        )
+
+        #expect(outcome.notes.count == 2)
+        #expect(outcome.notes.contains { $0.id == sharedID && $0.content == "Remote edit" })
+        #expect(outcome.notes.contains { $0.id != sharedID && $0.content == "Local draft" })
+    }
+
+    @Test func unchangedCloudRevisionKeepsDirtyLocalNoteDespiteRemoteClock() {
+        let sharedID = "shared-note"
+        let localNote = StickyNote(
+            id: sharedID,
+            content: "Local draft",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: Data([1]),
+            cloudRevision: "base-revision"
+        )
+        let remoteNote = StickyNote(
+            id: sharedID,
+            content: "Original",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 1_000),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([1]),
+            cloudRevision: "base-revision"
+        )
+
+        let outcome = StickyNotesMergeEngine.merge(
+            localNotes: [localNote],
+            remoteNotes: [remoteNote],
+            pendingDeletionIDs: []
+        )
+        let mergedNote = try! #require(outcome.notes.first)
+
+        #expect(outcome.notes.count == 1)
+        #expect(mergedNote.content == "Local draft")
+        #expect(mergedNote.needsCloudUpload)
+    }
+
     @Test func mergeEnginePreservesWindowStateWhenRemoteVersionWins() {
         let localFrame = StickyNoteFrame(x: 80, y: 120, width: 320, height: 280)
         let localNote = StickyNote(
@@ -1580,6 +1794,7 @@ private actor MockCloudService: StickyNotesCloudSyncing {
     private let remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness
     private let stateSerializationDelays: [Duration]
     private var stateSerializationCallCount = 0
+    private var restoredPersistedState = StickyNotesCloudPersistedState()
 
     init(
         remoteNotes: [StickyNote] = [],
@@ -1595,9 +1810,11 @@ private actor MockCloudService: StickyNotesCloudSyncing {
         CloudRemoteSnapshot(notes: Array(remoteNotesByID.values), completeness: remoteSnapshotCompleteness)
     }
 
-    func restore(stateSerializationData: Data?) async {}
+    func restore(persistedState: StickyNotesCloudPersistedState) async {
+        restoredPersistedState = persistedState
+    }
 
-    func currentStateSerializationData() async -> Data? {
+    func currentPersistedState() async -> StickyNotesCloudPersistedState {
         let currentCall = stateSerializationCallCount
         stateSerializationCallCount += 1
 
@@ -1605,7 +1822,11 @@ private actor MockCloudService: StickyNotesCloudSyncing {
             try? await Task.sleep(for: stateSerializationDelays[currentCall])
         }
 
-        return nil
+        return StickyNotesCloudPersistedState(
+            stateSerializationData: nil,
+            accountIdentifier: restoredPersistedState.accountIdentifier,
+            remoteNotes: Array(remoteNotesByID.values)
+        )
     }
 
     func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {

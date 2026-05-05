@@ -45,8 +45,8 @@ enum StickyNotesMergeEngine {
             }
 
             if localNote.needsCloudUpload
-                && remoteNote.lastModified > localNote.lastModified
-                && remoteNote.content != localNote.content
+                && remoteChangedSinceLocalBase(localNote: localNote, remoteNote: remoteNote)
+                && hasSharedCloudContentChanges(localNote, remoteNote)
             {
                 mergedNotes.append(remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote))
                 mergedNotes.append(makeConflictCopy(from: localNote))
@@ -162,12 +162,34 @@ enum StickyNotesMergeEngine {
             || note.lastModified != sentNote.lastModified
     }
 
+    private static func remoteChangedSinceLocalBase(
+        localNote: StickyNote,
+        remoteNote: StickyNote
+    ) -> Bool {
+        if let localCloudRevision = localNote.cloudRevision,
+           let remoteCloudRevision = remoteNote.cloudRevision
+        {
+            return localCloudRevision != remoteCloudRevision
+        }
+
+        return remoteNote.lastModified > localNote.lastModified
+    }
+
+    private static func hasSharedCloudContentChanges(
+        _ localNote: StickyNote,
+        _ remoteNote: StickyNote
+    ) -> Bool {
+        localNote.content != remoteNote.content
+            || localNote.titleOverride != remoteNote.titleOverride
+    }
+
     private static func refreshedLocalNote(
         _ localNote: StickyNote,
         cloudMetadataSource: StickyNote
     ) -> StickyNote {
         var refreshedNote = localNote
         refreshedNote.cloudKitSystemFieldsData = cloudMetadataSource.cloudKitSystemFieldsData
+        refreshedNote.cloudRevision = cloudMetadataSource.cloudRevision
         refreshedNote.needsCloudUpload = true
         return refreshedNote
     }
@@ -193,7 +215,8 @@ enum StickyNotesMergeEngine {
             isOpen: true,
             preferredFrame: note.preferredFrame,
             needsCloudUpload: true,
-            cloudKitSystemFieldsData: nil
+            cloudKitSystemFieldsData: nil,
+            cloudRevision: nil
         )
     }
 }

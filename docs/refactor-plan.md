@@ -8,6 +8,8 @@ The previous highest production data-loss risk was that an empty, unavailable, p
 
 The previous biggest remaining correctness risk was cross-device conflict handling: an active editor draft could ignore a remote update and later flush over it without checking whether the persisted base changed. That P0 draft safety fix is now implemented: editor drafts track their persisted base content, delayed saves use a checked store API, and stale draft flushes create a conflict copy instead of overwriting the current primary note.
 
+The current hardening pass also implemented the remaining highest-risk P0/P1 app fixes: local snapshot recovery with backup/quarantine behavior, CloudKit persisted account/cache state, same-account remote-zone reset reupload behavior, CloudKit revision-based conflict detection for tagged notes, and the macOS window iteration crash fix.
+
 Architecturally, `iStickies/Services/StickyNotesCloudService.swift` is the most overloaded module. It combines CloudKit entitlement gating, sync-engine lifecycle, zone management, event handling, retry classification, record mapping, legacy migration, and query pagination. `iStickies/Services/StickyNotesStore.swift` is also doing too much: state mutation, persistence, sync scheduling, merge application, and user-facing error state all live in one `@MainActor` object.
 
 Runtime performance is fine for a small sticky-notes app, but the current model does full-array sorting, full-snapshot persistence, broad `@Published` notifications, and cold-launch CloudKit hydration that will age poorly as note count grows. The existing tests cover several important regressions, including out-of-order snapshot writes, editor debounce behavior, conflict copies, and macOS frame suppression. The main test gap is around actual CloudKit state transitions and failure modes, because most sync tests use a simple mock service.
@@ -148,6 +150,8 @@ Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch trac
 
 ### P1: Cold launch does a full CloudKit zone query
 
+**Status:** Implemented for normal restored-sync launches. The store now persists a compact remote-note cache alongside CKSyncEngine state and CloudKit account identity. The CloudKit actor seeds `remoteNotesByID` from that cache on restore and only performs full custom-zone hydration when persisted sync state exists without a remote cache or when CloudKit reports the cache is no longer trustworthy.
+
 **Why it matters:** With restored sync state, `fetchAllNotes()` calls `syncEngine.fetchChanges()` and then `hydrateRemoteZoneSnapshotIfNeeded()`. Because `remoteNotesByID` is in-memory only, every fresh app process with persisted sync state can still query the whole custom zone.
 
 **Files/functions involved:**
@@ -167,6 +171,8 @@ Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch trac
 **Rough implementation scope:** medium.
 
 ### P1: Store writes and republishes whole-note state too often
+
+**Status:** Partially implemented. Targeted note mutations that require resorting now assign the sorted array once instead of mutating and then sorting/publishing again. The mobile dashboard now asks the store for notes in display order instead of rebuilding an ID dictionary during render. A deeper normalized store remains future work.
 
 **Why it matters:** Content updates sort the full notes array, rebuild `notesByID`, persist the entire JSON snapshot, and notify every subscriber. Dashboard and window code then rebuild dictionaries from the published array.
 
@@ -190,6 +196,8 @@ Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch trac
 **Rough implementation scope:** medium.
 
 ### P1: macOS window dictionary is mutated during iteration
+
+**Status:** Implemented. `syncWindows(with:)` now collects windows to close before invoking `closeFromCoordinator()`, so `windowWillClose` can mutate coordinator state outside the dictionary iteration.
 
 **Why it matters:** `syncWindows(with:)` iterates `windows` and calls `window.closeFromCoordinator()`. Closing can synchronously trigger `windowWillClose`, whose `onClose` closure removes from `windows` and `windowOrder`. Mutating a Swift dictionary while iterating it is a plausible runtime crash.
 
@@ -215,6 +223,8 @@ for (_, window) in windowsToClose {
 
 ### P1: Conflict resolution depends on client clocks
 
+**Status:** Implemented for CloudKit-tagged notes, with legacy fallback. `StickyNote` now persists `cloudRevision` from CloudKit record change tags. Dirty-local merge conflict detection uses revision mismatch first and only falls back to `lastModified` when revision metadata is absent.
+
 **Why it matters:** `lastModified` is set from local `Date()` and used to decide whether remote or local content wins. Devices with skewed clocks can incorrectly overwrite newer edits or create bogus conflicts.
 
 **Files/functions involved:**
@@ -234,6 +244,8 @@ for (_, window) in windowsToClose {
 **Rough implementation scope:** medium to large.
 
 ### P1: Snapshot decode has no versioning or recovery path
+
+**Status:** Implemented. `StickyNotesSnapshot` now includes schema/account/cache fields with backward-compatible decoding. `StickyNotesFileStore` writes a `.bak`, quarantines unreadable primary snapshots, recovers from backup when possible, and the store blocks automatic sync/persistence when no local snapshot can be recovered.
 
 **Why it matters:** `StickyNotesFileStore.load()` decodes one JSON file directly. Decode failure causes `StickyNotesStore.load()` to set an error and continue to initial sync with empty local state.
 
@@ -393,12 +405,12 @@ Only after correctness is improved, consider normalizing store state into `notes
    - Invalid `cloudKitStateSerializationData` is discarded, CloudKit remote-cache hydration is forced, and local notes plus pending deletions are preserved.
 
 2. Corrupt local snapshot file causing empty-state sync.
-   - Add decode recovery tests.
-   - Quarantine unreadable snapshots and avoid treating empty local state as authoritative.
+   - Status: implemented.
+   - Local snapshots now have backward-compatible schema decoding, `.bak` recovery, corrupt-primary quarantine, and an unrecoverable-load guard that blocks empty sync/persistence.
 
 3. Client-clock conflict mistakes.
-   - Add tests with skewed local/remote `lastModified` values.
-   - Introduce stable sync revision metadata.
+   - Status: implemented for notes with CloudKit revisions.
+   - `cloudRevision` is now persisted from record change tags, merge uses revision mismatch before clock comparison, and tests cover skewed clock conflicts.
 
 4. Dirty local drafts overwriting remote edits.
    - Status: implemented for the known P0 dirty-draft overwrite path.
@@ -417,4 +429,4 @@ Only after correctness is improved, consider normalizing store state into `notes
 
 ## Best next implementation prompt
 
-Fix the macOS window sync mutation risk: update `MacStickyNoteWindowCoordinator.syncWindows(with:)` to collect windows or note IDs to close before iterating closures can mutate `windows` and `windowOrder`, preserve the existing active-drag frame suppression behavior, and run the macOS unit tests.
+Add structured observability for sync and persistence: introduce content-free `OSLog` categories for local load/save recovery, CloudKit account changes, snapshot completeness, remote-zone reset reuploads, retry/conflict counts, and persistence failures; then add focused tests or log-injection seams where practical.

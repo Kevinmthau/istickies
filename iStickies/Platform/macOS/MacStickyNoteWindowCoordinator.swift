@@ -91,7 +91,11 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
             }
         }
 
-        for (id, window) in windows where notesByID[id]?.isOpen != true {
+        let windowsToClose = windows.filter { id, _ in
+            notesByID[id]?.isOpen != true
+        }
+
+        for (_, window) in windowsToClose {
             window.closeFromCoordinator()
         }
     }

@@ -30,14 +30,23 @@ enum CloudRemoteSnapshotCompleteness: Sendable, Equatable {
     case complete
     case unavailable(String)
     case partial(String)
+    case remoteReset(String)
 
     var allowsRemoteDeletions: Bool {
         self == .complete
     }
 
+    var shouldReuploadLocalNotes: Bool {
+        if case .remoteReset = self {
+            return true
+        }
+
+        return false
+    }
+
     var failureMessage: String? {
         switch self {
-        case .complete:
+        case .complete, .remoteReset:
             return nil
         case let .partial(message), let .unavailable(message):
             return message
@@ -46,8 +55,8 @@ enum CloudRemoteSnapshotCompleteness: Sendable, Equatable {
 }
 
 protocol StickyNotesCloudSyncing: Sendable {
-    func restore(stateSerializationData: Data?) async
-    func currentStateSerializationData() async -> Data?
+    func restore(persistedState: StickyNotesCloudPersistedState) async
+    func currentPersistedState() async -> StickyNotesCloudPersistedState
     func fetchAllNotes() async throws -> CloudRemoteSnapshot
     func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult
 }
@@ -87,10 +96,14 @@ enum StickyNotesCloudServiceFactory {
 }
 
 actor DisabledStickyNotesCloudService: StickyNotesCloudSyncing {
-    func restore(stateSerializationData: Data?) async {}
+    private var persistedState = StickyNotesCloudPersistedState()
 
-    func currentStateSerializationData() async -> Data? {
-        nil
+    func restore(persistedState: StickyNotesCloudPersistedState) async {
+        self.persistedState = persistedState
+    }
+
+    func currentPersistedState() async -> StickyNotesCloudPersistedState {
+        persistedState
     }
 
     func fetchAllNotes() async throws -> CloudRemoteSnapshot {
@@ -106,10 +119,12 @@ actor DisabledStickyNotesCloudService: StickyNotesCloudSyncing {
 }
 
 actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
+    private let container: CKContainer
     private let database: CKDatabase
 
     private var syncEngine: CKSyncEngine?
     private var stateSerializationData: Data?
+    private var acceptedAccountIdentifier: String?
     private var remoteNotesByID: [String: StickyNote] = [:]
     private var pendingNotesByID: [String: StickyNote] = [:]
     private var sendBatchTracker = CloudKitSendBatchTracker()
@@ -122,6 +137,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     private var remoteSnapshotIssueMessages: [String] = []
 
     init(container: CKContainer = CloudKitStickyNotesCloudService.defaultContainer()) {
+        self.container = container
         database = container.privateCloudDatabase
     }
 
@@ -133,19 +149,35 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         return CKContainer(identifier: "iCloud.\(bundleIdentifier)")
     }
 
-    func restore(stateSerializationData: Data?) async {
+    func restore(persistedState: StickyNotesCloudPersistedState) async {
         guard syncEngine == nil else { return }
-        self.stateSerializationData = stateSerializationData
-        hadPersistedSyncStateSerialization = stateSerializationData != nil
+        stateSerializationData = persistedState.stateSerializationData
+        acceptedAccountIdentifier = persistedState.accountIdentifier
+        remoteNotesByID = Dictionary(uniqueKeysWithValues: persistedState.remoteNotes.map {
+            ($0.id, $0.markedClean())
+        })
+        hadPersistedSyncStateSerialization = persistedState.stateSerializationData != nil
         didHydrateRemoteZoneSnapshot = false
-        needsRemoteZoneSnapshotHydration = stateSerializationData != nil
+        needsRemoteZoneSnapshotHydration = persistedState.stateSerializationData != nil
+            && persistedState.remoteNotes.isEmpty
     }
 
-    func currentStateSerializationData() async -> Data? {
-        stateSerializationData
+    func currentPersistedState() async -> StickyNotesCloudPersistedState {
+        StickyNotesCloudPersistedState(
+            stateSerializationData: stateSerializationData,
+            accountIdentifier: acceptedAccountIdentifier,
+            remoteNotes: Array(remoteNotesByID.values).map { $0.markedClean() }
+        )
     }
 
     func fetchAllNotes() async throws -> CloudRemoteSnapshot {
+        switch await resolveAccountAccess() {
+        case .available:
+            break
+        case let .unavailable(message), let .changed(message):
+            return remoteSnapshot(completeness: .unavailable(message))
+        }
+
         let syncEngine = try await ensureSyncEngine()
         remoteSnapshotIssueMessages.removeAll()
 
@@ -157,7 +189,12 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
 
         var issueMessages = remoteSnapshotIssueMessages
         remoteSnapshotIssueMessages.removeAll()
-        issueMessages.append(contentsOf: try await hydrateRemoteZoneSnapshotIfNeeded())
+        let hydrationOutcome = try await hydrateRemoteZoneSnapshotIfNeeded()
+        if let remoteResetMessage = hydrationOutcome.remoteResetMessage {
+            return remoteSnapshot(completeness: .remoteReset(remoteResetMessage))
+        }
+
+        issueMessages.append(contentsOf: hydrationOutcome.issueMessages)
         issueMessages.append(contentsOf: try await importLegacyDefaultZoneNotesIfNeeded(syncEngine: syncEngine))
 
         let completeness: CloudRemoteSnapshotCompleteness =
@@ -168,6 +205,13 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {
         guard !saves.isEmpty || !deletions.isEmpty else {
             return CloudSyncBatchResult()
+        }
+
+        switch await resolveAccountAccess() {
+        case .available:
+            break
+        case let .unavailable(message), let .changed(message):
+            return CloudSyncBatchResult(failureMessage: message)
         }
 
         do {
@@ -293,8 +337,8 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         return issueMessages
     }
 
-    private func hydrateRemoteZoneSnapshotIfNeeded() async throws -> [String] {
-        guard needsRemoteZoneSnapshotHydration else { return [] }
+    private func hydrateRemoteZoneSnapshotIfNeeded() async throws -> CloudRemoteHydrationOutcome {
+        guard needsRemoteZoneSnapshotHydration else { return CloudRemoteHydrationOutcome() }
 
         let query = CKQuery(recordType: StickyNoteRecordMapper.recordType, predicate: NSPredicate(value: true))
         query.sortDescriptors = [NSSortDescriptor(key: StickyNoteRecordMapper.lastModifiedSortKey, ascending: false)]
@@ -313,7 +357,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             zoneExistsRemotely = true
             didHydrateRemoteZoneSnapshot = issueMessages.isEmpty
             needsRemoteZoneSnapshotHydration = !issueMessages.isEmpty
-            return issueMessages
+            return CloudRemoteHydrationOutcome(issueMessages: issueMessages)
         } catch {
             guard CloudKitErrorClassifier.isMissingZone(error) else {
                 didHydrateRemoteZoneSnapshot = false
@@ -326,7 +370,54 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             zoneExistsRemotely = false
             didHydrateRemoteZoneSnapshot = true
             needsRemoteZoneSnapshotHydration = false
-            return []
+            return CloudRemoteHydrationOutcome(
+                remoteResetMessage: "CloudKit zone was reset and local notes will be uploaded again."
+            )
+        }
+    }
+
+    private func resolveAccountAccess() async -> CloudAccountAccess {
+        do {
+            let currentAccountIdentifier = try await fetchCurrentAccountIdentifier()
+
+            guard let acceptedAccountIdentifier else {
+                self.acceptedAccountIdentifier = currentAccountIdentifier
+                return .available
+            }
+
+            guard acceptedAccountIdentifier == currentAccountIdentifier else {
+                remoteNotesByID.removeAll()
+                pendingNotesByID.removeAll()
+                didResolveZoneExistence = false
+                zoneExistsRemotely = false
+                didHydrateRemoteZoneSnapshot = false
+                needsRemoteZoneSnapshotHydration = true
+                stateSerializationData = nil
+                syncEngine = nil
+                return .changed("CloudKit account changed. Local notes were kept on this device and were not uploaded to the new account.")
+            }
+
+            return .available
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
+    private func fetchCurrentAccountIdentifier() async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            container.fetchUserRecordID { recordID, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                guard let recordID else {
+                    continuation.resume(throwing: StickyNotesCloudAccountError.missingUserRecordID)
+                    return
+                }
+
+                continuation.resume(returning: recordID.recordName)
+            }
         }
     }
 
@@ -392,7 +483,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             didResolveZoneExistence = true
             zoneExistsRemotely = false
             didHydrateRemoteZoneSnapshot = false
-            needsRemoteZoneSnapshotHydration = false
+            needsRemoteZoneSnapshotHydration = true
             remoteNotesByID.removeAll()
         }
     }
@@ -438,7 +529,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             didResolveZoneExistence = true
             zoneExistsRemotely = false
             didHydrateRemoteZoneSnapshot = false
-            needsRemoteZoneSnapshotHydration = false
+            needsRemoteZoneSnapshotHydration = true
             remoteNotesByID.removeAll()
         }
 
@@ -590,6 +681,8 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
             switch accountChange.changeType {
             case .signIn:
                 remoteNotesByID.removeAll()
+                stateSerializationData = nil
+                self.syncEngine = nil
                 didResolveZoneExistence = false
                 zoneExistsRemotely = false
                 didHydrateRemoteZoneSnapshot = false
@@ -597,6 +690,8 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
             case .signOut, .switchAccounts:
                 remoteNotesByID.removeAll()
                 pendingNotesByID.removeAll()
+                stateSerializationData = nil
+                self.syncEngine = nil
                 didResolveZoneExistence = false
                 zoneExistsRemotely = false
                 didHydrateRemoteZoneSnapshot = false
@@ -604,6 +699,8 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
             @unknown default:
                 remoteNotesByID.removeAll()
                 pendingNotesByID.removeAll()
+                stateSerializationData = nil
+                self.syncEngine = nil
                 didResolveZoneExistence = false
                 zoneExistsRemotely = false
                 didHydrateRemoteZoneSnapshot = false
@@ -657,6 +754,28 @@ private enum StickyNotesCloudKitConfig {
 private struct CloudFetchedRecords {
     var records: [CKRecord]
     var partialFailureMessages: [String]
+}
+
+private struct CloudRemoteHydrationOutcome {
+    var issueMessages: [String] = []
+    var remoteResetMessage: String?
+}
+
+private enum CloudAccountAccess {
+    case available
+    case unavailable(String)
+    case changed(String)
+}
+
+private enum StickyNotesCloudAccountError: LocalizedError {
+    case missingUserRecordID
+
+    var errorDescription: String? {
+        switch self {
+        case .missingUserRecordID:
+            return "CloudKit account could not be identified."
+        }
+    }
 }
 
 struct CloudKitSyncEngineStateRecoveryResult {
