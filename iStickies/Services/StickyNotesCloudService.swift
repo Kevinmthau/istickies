@@ -166,7 +166,9 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         StickyNotesCloudPersistedState(
             stateSerializationData: stateSerializationData,
             accountIdentifier: acceptedAccountIdentifier,
-            remoteNotes: Array(remoteNotesByID.values).map { $0.markedClean() }
+            remoteNotes: needsRemoteZoneSnapshotHydration
+                ? []
+                : Array(remoteNotesByID.values).map { $0.markedClean() }
         )
     }
 

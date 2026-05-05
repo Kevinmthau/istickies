@@ -241,9 +241,11 @@ final class StickyNotesStore: ObservableObject {
 
         isSynchronizing = true
         syncState = .syncing
+        var remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness?
 
         do {
             let remoteSnapshot = try await cloudService.fetchAllNotes()
+            remoteSnapshotCompleteness = remoteSnapshot.completeness
             let mergeOutcome = StickyNotesMergeEngine.merge(
                 localNotes: notes,
                 remoteNotes: remoteSnapshot.notes,
@@ -286,7 +288,10 @@ final class StickyNotesStore: ObservableObject {
             }
 
             lastSuccessfulCloudSync = Date()
-            cachedCloudPersistedState = await cloudService.currentPersistedState()
+            cachedCloudPersistedState = trustedCloudPersistedState(
+                await cloudService.currentPersistedState(),
+                after: remoteSnapshot.completeness
+            )
             lastErrorMessage = nil
             syncState = .idle
             persistSnapshot()
@@ -296,7 +301,15 @@ final class StickyNotesStore: ObservableObject {
             }
         } catch {
             syncState = .failed(error.localizedDescription)
-            cachedCloudPersistedState = await cloudService.currentPersistedState()
+            let persistedState = await cloudService.currentPersistedState()
+            if let remoteSnapshotCompleteness {
+                cachedCloudPersistedState = trustedCloudPersistedState(
+                    persistedState,
+                    after: remoteSnapshotCompleteness
+                )
+            } else {
+                cachedCloudPersistedState = persistedState
+            }
             lastErrorMessage = "Cloud sync failed: \(error.localizedDescription)"
             persistSnapshot()
 
@@ -350,6 +363,21 @@ final class StickyNotesStore: ObservableObject {
 
     private var hasPendingCloudChanges: Bool {
         notes.contains(where: \.needsCloudUpload) || !pendingDeletionIDs.isEmpty
+    }
+
+    private func trustedCloudPersistedState(
+        _ persistedState: StickyNotesCloudPersistedState,
+        after remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness
+    ) -> StickyNotesCloudPersistedState {
+        guard case .partial = remoteSnapshotCompleteness else {
+            return persistedState
+        }
+
+        return StickyNotesCloudPersistedState(
+            stateSerializationData: persistedState.stateSerializationData,
+            accountIdentifier: persistedState.accountIdentifier,
+            remoteNotes: []
+        )
     }
 
     private func requeueLoadedNotesIfNeeded(

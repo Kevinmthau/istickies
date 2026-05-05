@@ -119,8 +119,7 @@ struct StickyNotesSnapshot: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
             ?? 1
-        notes = try container.decodeIfPresent([StickyNote].self, forKey: .notes)
-            ?? []
+        notes = try container.decode([StickyNote].self, forKey: .notes)
         pendingDeletionIDs = try container.decodeIfPresent([String].self, forKey: .pendingDeletionIDs)
             ?? []
         lastSuccessfulCloudSync = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulCloudSync)
