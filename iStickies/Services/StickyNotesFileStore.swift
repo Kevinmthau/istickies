@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 actor StickyNotesFileStore {
     private let fileURL: URL
@@ -24,8 +25,12 @@ actor StickyNotesFileStore {
     func load() throws -> StickyNotesSnapshot {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             if FileManager.default.fileExists(atPath: backupFileURL.path) {
+                StickyNotesLog.persistence.warning(
+                    "Primary local snapshot missing; loading backup snapshot"
+                )
                 return try loadSnapshot(from: backupFileURL)
             }
+            StickyNotesLog.persistence.debug("No local snapshot found; starting with an empty snapshot")
             return StickyNotesSnapshot()
         }
 
@@ -34,8 +39,17 @@ actor StickyNotesFileStore {
         } catch {
             let primaryError = error
             let quarantinedPrimaryURL = try? quarantineCorruptFile(at: fileURL)
+            StickyNotesLog.persistence.warning(
+                """
+                Primary local snapshot unreadable; quarantined: \(quarantinedPrimaryURL != nil, privacy: .public) \
+                error: \(primaryError.localizedDescription, privacy: .private)
+                """
+            )
 
             guard FileManager.default.fileExists(atPath: backupFileURL.path) else {
+                StickyNotesLog.persistence.error(
+                    "No backup snapshot available after primary snapshot failure"
+                )
                 throw StickyNotesFileStoreError.unrecoverableSnapshot(
                     primaryError: primaryError,
                     backupError: nil,
@@ -44,8 +58,18 @@ actor StickyNotesFileStore {
             }
 
             do {
-                return try loadSnapshot(from: backupFileURL)
+                let backupSnapshot = try loadSnapshot(from: backupFileURL)
+                StickyNotesLog.persistence.info(
+                    """
+                    Loaded backup snapshot after primary failure noteCount: \(backupSnapshot.notes.count, privacy: .public) \
+                    pendingDeletionCount: \(backupSnapshot.pendingDeletionIDs.count, privacy: .public)
+                    """
+                )
+                return backupSnapshot
             } catch {
+                StickyNotesLog.persistence.error(
+                    "Backup snapshot unreadable after primary failure: \(error.localizedDescription, privacy: .private)"
+                )
                 throw StickyNotesFileStoreError.unrecoverableSnapshot(
                     primaryError: primaryError,
                     backupError: error,

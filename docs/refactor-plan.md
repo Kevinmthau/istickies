@@ -10,6 +10,8 @@ The previous biggest remaining correctness risk was cross-device conflict handli
 
 The current hardening pass also implemented the remaining highest-risk P0/P1 app fixes: local snapshot recovery with backup/quarantine behavior, CloudKit persisted account/cache state, same-account remote-zone reset reupload behavior, CloudKit revision-based conflict detection for tagged notes, and the macOS window iteration crash fix.
 
+Structured observability is now in place for the sync and persistence paths. The app uses content-free `OSLog` categories for local load/save recovery, snapshot completeness, CloudKit account changes, remote-zone resets, retry/conflict counts, and persistence failures.
+
 Architecturally, `iStickies/Services/StickyNotesCloudService.swift` is the most overloaded module. It combines CloudKit entitlement gating, sync-engine lifecycle, zone management, event handling, retry classification, record mapping, legacy migration, and query pagination. `iStickies/Services/StickyNotesStore.swift` is also doing too much: state mutation, persistence, sync scheduling, merge application, and user-facing error state all live in one `@MainActor` object.
 
 Runtime performance is fine for a small sticky-notes app, but the current model does full-array sorting, full-snapshot persistence, broad `@Published` notifications, and cold-launch CloudKit hydration that will age poorly as note count grows. The existing tests cover several important regressions, including out-of-order snapshot writes, editor debounce behavior, conflict copies, and macOS frame suppression. The main test gap is around actual CloudKit state transitions and failure modes, because most sync tests use a simple mock service.
@@ -304,6 +306,8 @@ for (_, window) in windowsToClose {
 
 ### P2: Observability is missing from sync and persistence paths
 
+**Status:** Implemented. Added content-free `OSLog` categories for persistence, sync, CloudKit, and future windowing use. Store and CloudKit paths now log local load/recovery, snapshot completeness, remote-zone reset reuploads, account changes, retry/conflict counts, and persistence failures without note content, titles, or note IDs. A small test covers the stable snapshot-completeness labels used by the logs.
+
 **Why it matters:** There are no `Logger`, `OSLog`, signposts, or structured diagnostics in the sync/persistence paths. Production failures will surface mostly as user-facing alert strings.
 
 **Files/functions involved:**
@@ -337,7 +341,7 @@ Completed work:
 4. Updated merge logic to only apply remote deletion semantics for complete snapshots.
 5. Added tests for unavailable cloud snapshots, unavailable snapshots with pending deletions, unavailable snapshots with known remote notes, partial snapshots, and malformed/skipped remote records.
 
-Remaining follow-up: add structured observability for snapshot completeness and record-level failures.
+Completed follow-up: structured observability now logs snapshot completeness and record-level failure counts without note content.
 
 ### Stage 2: Harden editor draft conflict handling
 
@@ -418,15 +422,16 @@ Only after correctness is improved, consider normalizing store state into `notes
 
 5. Incomplete CloudKit snapshots deleting clean local notes.
    - Status: implemented for the known P0 data-loss path.
-   - Add observability for snapshot completeness and record-level failures.
+   - Observability for snapshot completeness and record-level failure counts is implemented.
 
 ### Security and production readiness
 
 1. Pin GitHub Actions by commit SHA and protect App Store Connect secrets.
 2. Keep note content out of logs and diagnostics.
 3. Add structured logs for sync state changes, retries, conflict copies, persistence failures, and CloudKit account changes.
+   - Status: implemented.
 4. Consider a user-visible recovery path for local snapshot corruption and persistent CloudKit account errors.
 
 ## Best next implementation prompt
 
-Add structured observability for sync and persistence: introduce content-free `OSLog` categories for local load/save recovery, CloudKit account changes, snapshot completeness, remote-zone reset reuploads, retry/conflict counts, and persistence failures; then add focused tests or log-injection seams where practical.
+Separate sync orchestration from store mutation: move `StickyNotesStore.syncNow()` orchestration into a small coordinator that receives local sync state, fetches and merges remote state, computes outgoing changes, applies CloudKit results, and returns a state transition for the store to publish and persist.

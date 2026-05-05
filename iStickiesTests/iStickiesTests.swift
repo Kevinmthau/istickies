@@ -334,6 +334,13 @@ struct iStickiesTests {
         #expect(persistedSnapshot.cloudRemoteCache.isEmpty)
     }
 
+    @Test func remoteSnapshotCompletenessUsesStableObservabilityNames() {
+        #expect(CloudRemoteSnapshotCompleteness.complete.observabilityName == "complete")
+        #expect(CloudRemoteSnapshotCompleteness.partial("partial").observabilityName == "partial")
+        #expect(CloudRemoteSnapshotCompleteness.unavailable("unavailable").observabilityName == "unavailable")
+        #expect(CloudRemoteSnapshotCompleteness.remoteReset("reset").observabilityName == "remoteReset")
+    }
+
     @Test func sameAccountRemoteResetReuploadsCleanLocalNotes() async throws {
         let fileURL = temporaryStoreURL()
         let fileStore = StickyNotesFileStore(fileURL: fileURL)

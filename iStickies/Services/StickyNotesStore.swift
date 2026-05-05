@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import SwiftUI
 
 private let stickyNotesDefaultCloudSyncDelay: TimeInterval = 0.75
@@ -78,6 +79,7 @@ final class StickyNotesStore: ObservableObject {
     func load() async {
         guard !hasLoaded else { return }
         hasStartedLoading = true
+        StickyNotesLog.persistence.info("Local snapshot load started")
         defer {
             hasLoaded = true
             hasFinishedInitialLoad = true
@@ -92,10 +94,22 @@ final class StickyNotesStore: ObservableObject {
             )
             await cloudService.restore(persistedState: cachedCloudPersistedState)
             applyLoadedSnapshot(snapshot)
+            StickyNotesLog.persistence.info(
+                """
+                Local snapshot loaded noteCount: \(snapshot.notes.count, privacy: .public) \
+                pendingDeletionCount: \(snapshot.pendingDeletionIDs.count, privacy: .public) \
+                remoteCacheCount: \(snapshot.cloudRemoteCache.count, privacy: .public) \
+                hasCloudState: \(snapshot.cloudKitStateSerializationData != nil, privacy: .public) \
+                hasCloudAccount: \(snapshot.cloudAccountIdentifier != nil, privacy: .public)
+                """
+            )
         } catch {
             hasLocalLoadFailure = true
             syncState = .failed(error.localizedDescription)
             lastErrorMessage = "Failed to restore notes locally: \(error.localizedDescription)"
+            StickyNotesLog.persistence.error(
+                "Local snapshot load failed: \(error.localizedDescription, privacy: .private)"
+            )
         }
     }
 
@@ -150,6 +164,7 @@ final class StickyNotesStore: ObservableObject {
                 notes.append(conflictCopy)
                 return true
             }
+            StickyNotesLog.sync.info("Editor draft conflict copy created")
             return .conflicted(
                 primaryContent: currentNote.content,
                 conflictCopyID: conflictCopy.id
@@ -237,15 +252,44 @@ final class StickyNotesStore: ObservableObject {
     }
 
     func syncNow() async {
-        guard hasLoaded, !isSynchronizing, !hasLocalLoadFailure else { return }
+        guard hasLoaded else { return }
+        guard !isSynchronizing else {
+            StickyNotesLog.sync.debug("Sync request ignored because a sync is already running")
+            return
+        }
+        guard !hasLocalLoadFailure else {
+            StickyNotesLog.sync.warning("Sync blocked after unrecoverable local snapshot load failure")
+            return
+        }
 
         isSynchronizing = true
         syncState = .syncing
         var remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness?
+        StickyNotesLog.sync.info(
+            """
+            Sync started localNoteCount: \(self.notes.count, privacy: .public) \
+            pendingDeletionCount: \(self.pendingDeletionIDs.count, privacy: .public) \
+            dirtyNoteCount: \(self.notes.filter(\.needsCloudUpload).count, privacy: .public)
+            """
+        )
 
         do {
             let remoteSnapshot = try await cloudService.fetchAllNotes()
             remoteSnapshotCompleteness = remoteSnapshot.completeness
+            StickyNotesLog.sync.info(
+                """
+                Remote snapshot fetched completeness: \(remoteSnapshot.completeness.observabilityName, privacy: .public) \
+                remoteNoteCount: \(remoteSnapshot.notes.count, privacy: .public)
+                """
+            )
+            if let failureMessage = remoteSnapshot.completeness.failureMessage {
+                StickyNotesLog.sync.warning(
+                    """
+                    Remote snapshot is incomplete status: \(remoteSnapshot.completeness.observabilityName, privacy: .public) \
+                    message: \(failureMessage, privacy: .private)
+                    """
+                )
+            }
             let mergeOutcome = StickyNotesMergeEngine.merge(
                 localNotes: notes,
                 remoteNotes: remoteSnapshot.notes,
@@ -254,8 +298,16 @@ final class StickyNotesStore: ObservableObject {
             )
             var mergedNotes = enforceYellowNotes(mergeOutcome.notes)
             if remoteSnapshot.completeness.shouldReuploadLocalNotes {
+                let clearedDeletionCount = pendingDeletionIDs.count
                 mergedNotes = resetCloudStateForRemoteReset(mergedNotes)
                 pendingDeletionIDs.removeAll()
+                StickyNotesLog.sync.warning(
+                    """
+                    Remote zone reset detected; local notes marked for reupload \
+                    noteCount: \(mergedNotes.count, privacy: .public) \
+                    clearedDeletionCount: \(clearedDeletionCount, privacy: .public)
+                    """
+                )
             }
             if mergedNotes != notes {
                 notes = sortNotes(mergedNotes)
@@ -267,9 +319,24 @@ final class StickyNotesStore: ObservableObject {
             let outgoingSaves = notes.filter(\.needsCloudUpload)
             let outgoingSavesByID = Dictionary(uniqueKeysWithValues: outgoingSaves.map { ($0.id, $0) })
             let outgoingDeletionIDs = Array(pendingDeletionIDs)
+            StickyNotesLog.sync.info(
+                """
+                Sending CloudKit changes saveCount: \(outgoingSaves.count, privacy: .public) \
+                deleteCount: \(outgoingDeletionIDs.count, privacy: .public)
+                """
+            )
             let syncResult = await cloudService.syncChanges(
                 saves: outgoingSaves,
                 deletions: outgoingDeletionIDs
+            )
+            StickyNotesLog.sync.info(
+                """
+                CloudKit batch result savedCount: \(syncResult.savedNotes.count, privacy: .public) \
+                deletedCount: \(syncResult.deletedNoteIDs.count, privacy: .public) \
+                retryCount: \(syncResult.pendingNotesRequiringRetry.count, privacy: .public) \
+                conflictCount: \(syncResult.conflicts.count, privacy: .public) \
+                hasFailure: \(syncResult.failureMessage != nil, privacy: .public)
+                """
             )
             let syncOutcome = StickyNotesMergeEngine.apply(
                 syncResult: syncResult,
@@ -295,8 +362,16 @@ final class StickyNotesStore: ObservableObject {
             lastErrorMessage = nil
             syncState = .idle
             persistSnapshot()
+            StickyNotesLog.sync.info(
+                """
+                Sync completed noteCount: \(self.notes.count, privacy: .public) \
+                pendingDeletionCount: \(self.pendingDeletionIDs.count, privacy: .public) \
+                dirtyNoteCount: \(self.notes.filter(\.needsCloudUpload).count, privacy: .public)
+                """
+            )
 
             if hasPendingCloudChanges {
+                StickyNotesLog.sync.info("Scheduling follow-up sync delaySeconds: \(1.0, privacy: .public)")
                 scheduleCloudSync(after: 1.0)
             }
         } catch {
@@ -312,8 +387,16 @@ final class StickyNotesStore: ObservableObject {
             }
             lastErrorMessage = "Cloud sync failed: \(error.localizedDescription)"
             persistSnapshot()
+            StickyNotesLog.sync.error(
+                """
+                Sync failed pendingDeletionCount: \(self.pendingDeletionIDs.count, privacy: .public) \
+                dirtyNoteCount: \(self.notes.filter(\.needsCloudUpload).count, privacy: .public) \
+                error: \(error.localizedDescription, privacy: .private)
+                """
+            )
 
             if hasPendingCloudChanges {
+                StickyNotesLog.sync.info("Scheduling sync retry delaySeconds: \(5.0, privacy: .public)")
                 scheduleCloudSync(after: 5.0)
             }
         }
@@ -482,7 +565,12 @@ final class StickyNotesStore: ObservableObject {
     }
 
     private func persistSnapshot() {
-        guard !hasLocalLoadFailure else { return }
+        guard !hasLocalLoadFailure else {
+            StickyNotesLog.persistence.warning(
+                "Snapshot persistence skipped after unrecoverable local load failure"
+            )
+            return
+        }
 
         snapshotGeneration += 1
         let snapshotGeneration = snapshotGeneration
@@ -506,6 +594,14 @@ final class StickyNotesStore: ObservableObject {
                 await MainActor.run {
                     self.lastErrorMessage = "Failed to save notes locally: \(error.localizedDescription)"
                 }
+                StickyNotesLog.persistence.error(
+                    """
+                    Local snapshot save failed generation: \(snapshotGeneration, privacy: .public) \
+                    noteCount: \(snapshot.notes.count, privacy: .public) \
+                    pendingDeletionCount: \(snapshot.pendingDeletionIDs.count, privacy: .public) \
+                    error: \(error.localizedDescription, privacy: .private)
+                    """
+                )
             }
         }
     }
