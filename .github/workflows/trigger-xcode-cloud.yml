@@ -15,20 +15,24 @@ permissions:
 jobs:
   dispatch-xcode-cloud:
     runs-on: ubuntu-latest
+    # Configure this GitHub environment with required reviewers and
+    # environment-scoped App Store Connect secrets.
+    environment:
+      name: app-store-connect
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Generate App Store Connect JWT token
         id: asc
-        uses: yuki0n0/action-appstoreconnect-token@v1.0
+        uses: yuki0n0/action-appstoreconnect-token@f72b55376ca945b2c1049163f6a1e0116bbe7029 # v1.0
         with:
           issuer id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           key id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           key: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
 
       - name: Trigger Xcode Cloud workflow
-        uses: yorifuji/actions-xcode-cloud-dispatcher@v1
+        uses: yorifuji/actions-xcode-cloud-dispatcher@dcf4ab200b9fb89a20c903bae840f2e2ce96422d # v1
         with:
           appstore-connect-token: ${{ steps.asc.outputs.token }}
           xcode-cloud-workflow-id: ${{ vars.XCODE_CLOUD_WORKFLOW_ID }}

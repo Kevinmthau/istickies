@@ -387,7 +387,7 @@ Remaining follow-up: `StickyNotesStore` is still large and owns persistence/writ
 
 ### Stage 5: Normalize state and reduce UI churn
 
-Status: partially implemented.
+Status: complete for the runtime/UI-churn goal. `StickyNotesStore.notes` remains as a read-only compatibility snapshot for tests, sync-local-state assembly, persistence snapshots, and internal diagnostics; production UI paths now use narrower note/list/status observations and ordered/open ID publishers.
 
 Normalize store state into `notesByID` and ordered IDs. This is more invasive and should follow the sync safety and orchestration work.
 
@@ -403,8 +403,9 @@ Completed work:
 8. Content-edit snapshot persistence is now coalesced during sustained editing, while `flushPendingPersistence()` forces any delayed write before backgrounding or tests reload local state.
 9. Added list/status observation projections so the mobile scene and sync alert observe ordered IDs and sync/error state without subscribing to the full store object.
 10. Replaced remaining environment-object store lookups in editor/window/mobile wrappers with a plain SwiftUI environment reference, keeping note content views on note-scoped observations and commands on direct store/coordinator references.
+11. Audited the remaining compatibility `store.notes` consumers. The remaining direct uses are tests, sync/local-state plumbing, persistence/logging snapshots, and internal consistency checks rather than production SwiftUI observation.
 
-Remaining follow-up: decide whether the compatibility `notes` snapshot should remain as a read-only convenience for tests/internal diagnostics or be replaced by narrower accessors everywhere. Remaining broad store observation is limited to app ownership and macOS lifecycle Combine subscriptions.
+Remaining follow-up: optional only. Removing the compatibility snapshot would be a cleanup, not a current performance blocker. Remaining broad store observation is limited to app ownership and macOS lifecycle Combine subscriptions.
 
 ## Performance plan
 
@@ -423,7 +424,7 @@ Remaining follow-up: decide whether the compatibility `notes` snapshot should re
 1. Seed or persist the CloudKit remote cache to avoid full-zone hydration on every cold launch.
 2. Normalize store state into ID-indexed storage plus ordered IDs.
 3. Publish narrower state changes so one note edit does not make every subscriber recompute.
-   - Status: partially implemented with note-scoped observations, list/status observation projections, and ordered/open ID publishers.
+   - Status: implemented for production UI paths with note-scoped observations, list/status observation projections, and ordered/open ID publishers.
 4. Move conflict/version metadata away from client-clock-only `lastModified`.
 
 ## Hardening plan
@@ -453,6 +454,7 @@ Remaining follow-up: decide whether the compatibility `notes` snapshot should re
 ### Security and production readiness
 
 1. Pin GitHub Actions by commit SHA and protect App Store Connect secrets.
+   - Status: implemented in `.github/workflows/trigger-xcode-cloud.yml` for action pinning and environment gating. Repository settings still need the `app-store-connect` environment configured with required reviewers and environment-scoped App Store Connect secrets.
 2. Keep note content out of logs and diagnostics.
 3. Add structured logs for sync state changes, retries, conflict copies, persistence failures, and CloudKit account changes.
    - Status: implemented.
@@ -460,4 +462,4 @@ Remaining follow-up: decide whether the compatibility `notes` snapshot should re
 
 ## Best next implementation prompt
 
-Finish Stage 5 API cleanup: audit the remaining compatibility `store.notes` consumers in tests/internal diagnostics, decide whether `notes` should stay as a read-only convenience or be replaced by narrower accessors, then move to the P1 App Store Connect workflow hardening.
+Add a user-visible recovery path for local snapshot corruption and persistent CloudKit account errors, then replace the template UI tests with launch-argument-controlled create/edit/persist/delete flows.
