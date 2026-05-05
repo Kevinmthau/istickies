@@ -71,6 +71,114 @@ struct iStickiesTests {
         #expect(persistedSnapshot.cloudRemoteCache.first?.cloudRevision == "server-revision")
     }
 
+    @Test func syncCoordinatorReturnsMergedStateTransition() async throws {
+        let remoteNote = StickyNote(
+            id: "remote-note",
+            content: "Remote note",
+            color: .mint,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: nil
+        )
+        let coordinator = StickyNotesSyncCoordinator(
+            cloudService: MockCloudService(remoteNotes: [remoteNote])
+        )
+
+        let remoteSnapshot = try await coordinator.fetchRemoteSnapshot()
+        let transition = coordinator.merge(
+            remoteSnapshot: remoteSnapshot,
+            localState: StickyNotesSyncLocalState(notes: [], pendingDeletionIDs: [])
+        )
+        let mergedNote = try #require(transition.state.notes.first)
+
+        #expect(transition.remoteSnapshotCompleteness == .complete)
+        #expect(mergedNote.id == remoteNote.id)
+        #expect(mergedNote.color == .yellow)
+        #expect(mergedNote.needsCloudUpload)
+    }
+
+    @Test func syncCoordinatorAppliesBatchResultToLatestLocalState() async throws {
+        let sentNote = StickyNote(
+            id: "shared-note",
+            content: "First draft",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: nil
+        )
+        var editedAfterSend = sentNote
+        editedAfterSend.content = "Second draft"
+        editedAfterSend.lastModified = Date(timeIntervalSince1970: 30)
+
+        let coordinator = StickyNotesSyncCoordinator(cloudService: MockCloudService())
+        let outgoingChanges = coordinator.outgoingChanges(
+            from: StickyNotesSyncLocalState(notes: [sentNote], pendingDeletionIDs: [])
+        )
+        let syncResult = await coordinator.send(outgoingChanges)
+        let transition = coordinator.apply(
+            syncResult: syncResult,
+            to: StickyNotesSyncLocalState(notes: [editedAfterSend], pendingDeletionIDs: []),
+            sentNotesByID: outgoingChanges.savesByID
+        )
+        let preservedNote = try #require(transition.state.notes.first)
+
+        #expect(preservedNote.content == "Second draft")
+        #expect(preservedNote.lastModified == editedAfterSend.lastModified)
+        #expect(preservedNote.needsCloudUpload)
+    }
+
+    @Test func syncCoordinatorDropsRemoteCacheAfterPartialSnapshot() async throws {
+        let remoteNote = StickyNote(
+            id: "remote-note",
+            content: "Remote note",
+            color: .yellow,
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            isOpen: true,
+            preferredFrame: nil,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: nil
+        )
+        let coordinator = StickyNotesSyncCoordinator(
+            cloudService: MockCloudService(remoteNotes: [remoteNote])
+        )
+
+        let persistedState = await coordinator.currentPersistedState(after: .partial("Partial fetch"))
+
+        #expect(persistedState.remoteNotes.isEmpty)
+    }
+
+    @Test func localEditMadeWhileRemoteFetchIsPendingSurvivesSync() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let cloudService = MockCloudService(fetchDelay: .milliseconds(80))
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: cloudService, autoLoad: false)
+
+        await store.load()
+        let noteID = store.createNote()
+
+        let syncTask = Task {
+            await store.syncNow()
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        store.updateContent(id: noteID, content: "Edited while fetching")
+
+        await syncTask.value
+
+        let localNote = try #require(store.note(withID: noteID))
+        #expect(localNote.content == "Edited while fetching")
+
+        let remoteNotes = await cloudService.snapshot()
+        #expect(remoteNotes.contains { note in
+            note.id == noteID && note.content == "Edited while fetching"
+        })
+    }
+
     @Test func unavailableCloudSnapshotDoesNotDeleteCleanLocalNotes() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let previousSyncDate = Date(timeIntervalSince1970: 30)
@@ -1863,6 +1971,7 @@ private actor MockCloudService: StickyNotesCloudSyncing {
     private var remoteNotesByID: [String: StickyNote]
     private var deletedIDs: [String] = []
     private let remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness
+    private let fetchDelay: Duration
     private let stateSerializationDelays: [Duration]
     private let currentStateSerializationData: Data?
     private var stateSerializationCallCount = 0
@@ -1871,17 +1980,20 @@ private actor MockCloudService: StickyNotesCloudSyncing {
     init(
         remoteNotes: [StickyNote] = [],
         remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness = .complete,
+        fetchDelay: Duration = .zero,
         stateSerializationDelays: [Duration] = [],
         currentStateSerializationData: Data? = nil
     ) {
         remoteNotesByID = Dictionary(uniqueKeysWithValues: remoteNotes.map { ($0.id, $0.markedClean()) })
         self.remoteSnapshotCompleteness = remoteSnapshotCompleteness
+        self.fetchDelay = fetchDelay
         self.stateSerializationDelays = stateSerializationDelays
         self.currentStateSerializationData = currentStateSerializationData
     }
 
     func fetchAllNotes() async throws -> CloudRemoteSnapshot {
-        CloudRemoteSnapshot(notes: Array(remoteNotesByID.values), completeness: remoteSnapshotCompleteness)
+        try? await Task.sleep(for: fetchDelay)
+        return CloudRemoteSnapshot(notes: Array(remoteNotesByID.values), completeness: remoteSnapshotCompleteness)
     }
 
     func restore(persistedState: StickyNotesCloudPersistedState) async {

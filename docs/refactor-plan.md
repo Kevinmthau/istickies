@@ -12,7 +12,9 @@ The current hardening pass also implemented the remaining highest-risk P0/P1 app
 
 Structured observability is now in place for the sync and persistence paths. The app uses content-free `OSLog` categories for local load/save recovery, snapshot completeness, CloudKit account changes, remote-zone resets, retry/conflict counts, and persistence failures.
 
-Architecturally, `iStickies/Services/StickyNotesCloudService.swift` is the most overloaded module. It combines CloudKit entitlement gating, sync-engine lifecycle, zone management, event handling, retry classification, record mapping, legacy migration, and query pagination. `iStickies/Services/StickyNotesStore.swift` is also doing too much: state mutation, persistence, sync scheduling, merge application, and user-facing error state all live in one `@MainActor` object.
+Sync orchestration has been extracted from `StickyNotesStore` into `StickyNotesSyncCoordinator`. The store now owns published state, persistence, and executing scheduled sync tasks, while the coordinator owns remote fetch/merge/send/apply decisions, retry-delay choices, and local state transitions for the store to publish.
+
+Architecturally, `iStickies/Services/StickyNotesCloudService.swift` is the most overloaded module. It combines CloudKit entitlement gating, sync-engine lifecycle, zone management, event handling, retry classification, record mapping, legacy migration, and query pagination. `iStickies/Services/StickyNotesStore.swift` is still large, but the sync workflow is no longer embedded directly in the store.
 
 Runtime performance is fine for a small sticky-notes app, but the current model does full-array sorting, full-snapshot persistence, broad `@Published` notifications, and cold-launch CloudKit hydration that will age poorly as note count grows. The existing tests cover several important regressions, including out-of-order snapshot writes, editor debounce behavior, conflict copies, and macOS frame suppression. The main test gap is around actual CloudKit state transitions and failure modes, because most sync tests use a simple mock service.
 
@@ -124,7 +126,7 @@ If persisted content changed since the draft base and differs from the draft, th
 - `CloudKitSendBatchTracker`: owns active send-batch state, saved/deleted/conflict/retry bookkeeping, and result finalization.
 - `CloudKitErrorClassifier`: maps CloudKit errors into retry, conflict, missing zone, partial failure, and terminal failure categories.
 
-Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch tracking has been extracted into `CloudKitSendBatchTracker`, including active batch state, save/delete/conflict/retry bookkeeping, result finalization, and focused unit tests. CloudKit error interpretation has been extracted into `CloudKitErrorClassifier`, covering missing-zone checks, sent-record save/delete outcomes, unknown-item retry handling, partial-failure recovery, and terminal failures. Continue with the larger service split or sync-orchestration extraction once the remaining smaller P1 correctness fixes are handled.
+Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch tracking has been extracted into `CloudKitSendBatchTracker`, including active batch state, save/delete/conflict/retry bookkeeping, result finalization, and focused unit tests. CloudKit error interpretation has been extracted into `CloudKitErrorClassifier`, covering missing-zone checks, sent-record save/delete outcomes, unknown-item retry handling, partial-failure recovery, and terminal failures. Sync orchestration has also been extracted into `StickyNotesSyncCoordinator`. Continue with the larger CloudKit service split after the remaining smaller production-readiness work is handled.
 
 **Expected payoff:** Smaller review surface, better tests, and safer changes to sync behavior.
 
@@ -369,20 +371,25 @@ These components can be unit-tested without live CloudKit and will make the late
 
 ### Stage 4: Separate sync orchestration from store mutation
 
-Move `syncNow()` orchestration out of `StickyNotesStore` into a small coordinator that receives local state and returns a state transition:
+Status: complete for the store/sync orchestration boundary.
 
-- fetch remote snapshot
-- merge local and remote
-- compute outgoing saves/deletions
-- send changes
-- apply sync result
-- choose retry delay
+Completed work:
 
-The store should still own published state and UI-facing mutation APIs, but it should not own the whole sync workflow.
+1. Added `StickyNotesSyncCoordinator`.
+2. Moved remote snapshot fetch/merge handling into coordinator transitions.
+3. Moved outgoing save/delete computation and CloudKit batch sending into the coordinator.
+4. Moved sync-result application and partial-snapshot remote-cache trust decisions into the coordinator.
+5. Moved retry/follow-up delay selection into the coordinator while keeping scheduled-task execution in the store.
+6. Added coordinator-focused tests for merge transitions, applying batch results to latest local state, and partial-snapshot cache clearing.
+7. Kept `StickyNotesStore` responsible for `@Published` state, persistence, scheduled-task execution, and UI-facing mutation APIs.
+
+Remaining follow-up: `StickyNotesStore` is still large and owns persistence/write coalescing. That should be handled as part of the normalized state and UI-churn work rather than by expanding the sync coordinator.
 
 ### Stage 5: Normalize state and reduce UI churn
 
-Only after correctness is improved, consider normalizing store state into `notesByID` and ordered IDs. This is more invasive and should follow the sync safety work.
+Status: not started.
+
+Normalize store state into `notesByID` and ordered IDs. This is more invasive and should follow the sync safety and orchestration work.
 
 ## Performance plan
 
@@ -434,4 +441,4 @@ Only after correctness is improved, consider normalizing store state into `notes
 
 ## Best next implementation prompt
 
-Separate sync orchestration from store mutation: move `StickyNotesStore.syncNow()` orchestration into a small coordinator that receives local sync state, fetches and merges remote state, computes outgoing changes, applies CloudKit results, and returns a state transition for the store to publish and persist.
+Normalize state and reduce UI churn: refactor `StickyNotesStore` toward ID-indexed storage plus ordered note IDs, keep published updates narrower where practical, and preserve existing persistence/sync behavior with focused tests around note ordering, editing, and window sync.

@@ -43,6 +43,7 @@ final class StickyNotesStore: ObservableObject {
 
     private let fileStore: StickyNotesFileStore
     private let cloudService: any StickyNotesCloudSyncing
+    private let syncCoordinator: StickyNotesSyncCoordinator
     private var pendingDeletionIDs: Set<String> = []
     private var hasStartedLoading = false
     private var hasLoaded = false
@@ -60,6 +61,7 @@ final class StickyNotesStore: ObservableObject {
     ) {
         self.fileStore = fileStore
         self.cloudService = cloudService
+        syncCoordinator = StickyNotesSyncCoordinator(cloudService: cloudService)
 
         if autoLoad {
             loadIfNeeded()
@@ -264,6 +266,8 @@ final class StickyNotesStore: ObservableObject {
 
         isSynchronizing = true
         syncState = .syncing
+        defer { isSynchronizing = false }
+
         var remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness?
         StickyNotesLog.sync.info(
             """
@@ -274,90 +278,35 @@ final class StickyNotesStore: ObservableObject {
         )
 
         do {
-            let remoteSnapshot = try await cloudService.fetchAllNotes()
-            remoteSnapshotCompleteness = remoteSnapshot.completeness
-            StickyNotesLog.sync.info(
-                """
-                Remote snapshot fetched completeness: \(remoteSnapshot.completeness.observabilityName, privacy: .public) \
-                remoteNoteCount: \(remoteSnapshot.notes.count, privacy: .public)
-                """
+            let remoteSnapshot = try await syncCoordinator.fetchRemoteSnapshot()
+            let mergeTransition = syncCoordinator.merge(
+                remoteSnapshot: remoteSnapshot,
+                localState: syncLocalState
             )
-            if let failureMessage = remoteSnapshot.completeness.failureMessage {
-                StickyNotesLog.sync.warning(
-                    """
-                    Remote snapshot is incomplete status: \(remoteSnapshot.completeness.observabilityName, privacy: .public) \
-                    message: \(failureMessage, privacy: .private)
-                    """
-                )
-            }
-            let mergeOutcome = StickyNotesMergeEngine.merge(
-                localNotes: notes,
-                remoteNotes: remoteSnapshot.notes,
-                pendingDeletionIDs: pendingDeletionIDs,
-                remoteSnapshotCompleteness: remoteSnapshot.completeness
-            )
-            var mergedNotes = enforceYellowNotes(mergeOutcome.notes)
-            if remoteSnapshot.completeness.shouldReuploadLocalNotes {
-                let clearedDeletionCount = pendingDeletionIDs.count
-                mergedNotes = resetCloudStateForRemoteReset(mergedNotes)
-                pendingDeletionIDs.removeAll()
-                StickyNotesLog.sync.warning(
-                    """
-                    Remote zone reset detected; local notes marked for reupload \
-                    noteCount: \(mergedNotes.count, privacy: .public) \
-                    clearedDeletionCount: \(clearedDeletionCount, privacy: .public)
-                    """
-                )
-            }
-            if mergedNotes != notes {
-                notes = sortNotes(mergedNotes)
-                persistSnapshot()
-            }
-            if case let .unavailable(message) = remoteSnapshot.completeness {
-                throw StickyNotesCloudSyncError(message: message)
-            }
-            let outgoingSaves = notes.filter(\.needsCloudUpload)
-            let outgoingSavesByID = Dictionary(uniqueKeysWithValues: outgoingSaves.map { ($0.id, $0) })
-            let outgoingDeletionIDs = Array(pendingDeletionIDs)
-            StickyNotesLog.sync.info(
-                """
-                Sending CloudKit changes saveCount: \(outgoingSaves.count, privacy: .public) \
-                deleteCount: \(outgoingDeletionIDs.count, privacy: .public)
-                """
-            )
-            let syncResult = await cloudService.syncChanges(
-                saves: outgoingSaves,
-                deletions: outgoingDeletionIDs
-            )
-            StickyNotesLog.sync.info(
-                """
-                CloudKit batch result savedCount: \(syncResult.savedNotes.count, privacy: .public) \
-                deletedCount: \(syncResult.deletedNoteIDs.count, privacy: .public) \
-                retryCount: \(syncResult.pendingNotesRequiringRetry.count, privacy: .public) \
-                conflictCount: \(syncResult.conflicts.count, privacy: .public) \
-                hasFailure: \(syncResult.failureMessage != nil, privacy: .public)
-                """
-            )
-            let syncOutcome = StickyNotesMergeEngine.apply(
-                syncResult: syncResult,
-                to: notes,
-                pendingDeletionIDs: pendingDeletionIDs,
-                sentNotesByID: outgoingSavesByID
-            )
-            notes = sortNotes(enforceYellowNotes(syncOutcome.notes))
-            pendingDeletionIDs = syncOutcome.pendingDeletionIDs
+            remoteSnapshotCompleteness = mergeTransition.remoteSnapshotCompleteness
+            applySyncLocalState(mergeTransition.state, persistIfChanged: true)
 
-            if let failureMessage = syncResult.failureMessage {
-                throw StickyNotesCloudSyncError(message: failureMessage)
-            }
-            if let failureMessage = remoteSnapshot.completeness.failureMessage {
-                throw StickyNotesCloudSyncError(message: failureMessage)
-            }
+            try syncCoordinator.validateSnapshotAllowsOutgoingChanges(
+                mergeTransition.remoteSnapshotCompleteness
+            )
+
+            let outgoingChanges = syncCoordinator.outgoingChanges(from: syncLocalState)
+            let syncResult = await syncCoordinator.send(outgoingChanges)
+            let applicationTransition = syncCoordinator.apply(
+                syncResult: syncResult,
+                to: syncLocalState,
+                sentNotesByID: outgoingChanges.savesByID
+            )
+            applySyncLocalState(applicationTransition.state, persistIfChanged: false)
+
+            try syncCoordinator.validateCompletion(
+                remoteSnapshotCompleteness: mergeTransition.remoteSnapshotCompleteness,
+                syncResult: syncResult
+            )
 
             lastSuccessfulCloudSync = Date()
-            cachedCloudPersistedState = trustedCloudPersistedState(
-                await cloudService.currentPersistedState(),
-                after: remoteSnapshot.completeness
+            cachedCloudPersistedState = await syncCoordinator.currentPersistedState(
+                after: mergeTransition.remoteSnapshotCompleteness
             )
             lastErrorMessage = nil
             syncState = .idle
@@ -370,21 +319,17 @@ final class StickyNotesStore: ObservableObject {
                 """
             )
 
-            if hasPendingCloudChanges {
-                StickyNotesLog.sync.info("Scheduling follow-up sync delaySeconds: \(1.0, privacy: .public)")
-                scheduleCloudSync(after: 1.0)
+            if let delay = syncCoordinator.followUpSyncDelay(
+                hasPendingCloudChanges: hasPendingCloudChanges
+            ) {
+                StickyNotesLog.sync.info("Scheduling follow-up sync delaySeconds: \(delay, privacy: .public)")
+                scheduleCloudSync(after: delay)
             }
         } catch {
             syncState = .failed(error.localizedDescription)
-            let persistedState = await cloudService.currentPersistedState()
-            if let remoteSnapshotCompleteness {
-                cachedCloudPersistedState = trustedCloudPersistedState(
-                    persistedState,
-                    after: remoteSnapshotCompleteness
-                )
-            } else {
-                cachedCloudPersistedState = persistedState
-            }
+            cachedCloudPersistedState = await syncCoordinator.currentPersistedState(
+                after: remoteSnapshotCompleteness
+            )
             lastErrorMessage = "Cloud sync failed: \(error.localizedDescription)"
             persistSnapshot()
             StickyNotesLog.sync.error(
@@ -395,13 +340,13 @@ final class StickyNotesStore: ObservableObject {
                 """
             )
 
-            if hasPendingCloudChanges {
-                StickyNotesLog.sync.info("Scheduling sync retry delaySeconds: \(5.0, privacy: .public)")
-                scheduleCloudSync(after: 5.0)
+            if let delay = syncCoordinator.retrySyncDelay(
+                hasPendingCloudChanges: hasPendingCloudChanges
+            ) {
+                StickyNotesLog.sync.info("Scheduling sync retry delaySeconds: \(delay, privacy: .public)")
+                scheduleCloudSync(after: delay)
             }
         }
-
-        isSynchronizing = false
     }
 
     private func mutateNote(
@@ -448,21 +393,6 @@ final class StickyNotesStore: ObservableObject {
         notes.contains(where: \.needsCloudUpload) || !pendingDeletionIDs.isEmpty
     }
 
-    private func trustedCloudPersistedState(
-        _ persistedState: StickyNotesCloudPersistedState,
-        after remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness
-    ) -> StickyNotesCloudPersistedState {
-        guard case .partial = remoteSnapshotCompleteness else {
-            return persistedState
-        }
-
-        return StickyNotesCloudPersistedState(
-            stateSerializationData: persistedState.stateSerializationData,
-            accountIdentifier: persistedState.accountIdentifier,
-            remoteNotes: []
-        )
-    }
-
     private func requeueLoadedNotesIfNeeded(
         _ loadedNotes: [StickyNote],
         needsCloudBootstrap: Bool
@@ -474,12 +404,6 @@ final class StickyNotesStore: ObservableObject {
             var copy = note
             copy.needsCloudUpload = true
             return copy
-        }
-    }
-
-    private func resetCloudStateForRemoteReset(_ notes: [StickyNote]) -> [StickyNote] {
-        notes.map { note in
-            note.resettingCloudKitSystemFields()
         }
     }
 
@@ -606,6 +530,33 @@ final class StickyNotesStore: ObservableObject {
         }
     }
 
+    private var syncLocalState: StickyNotesSyncLocalState {
+        StickyNotesSyncLocalState(
+            notes: notes,
+            pendingDeletionIDs: pendingDeletionIDs
+        )
+    }
+
+    private func applySyncLocalState(
+        _ state: StickyNotesSyncLocalState,
+        persistIfChanged: Bool
+    ) {
+        let sortedNotes = sortNotes(state.notes)
+        let didChangeNotes = notes != sortedNotes
+        let didChangePendingDeletions = pendingDeletionIDs != state.pendingDeletionIDs
+        guard didChangeNotes || didChangePendingDeletions else { return }
+
+        if didChangeNotes {
+            notes = sortedNotes
+        }
+        if didChangePendingDeletions {
+            pendingDeletionIDs = state.pendingDeletionIDs
+        }
+        if persistIfChanged {
+            persistSnapshot()
+        }
+    }
+
     func flushPendingPersistence() async {
         while true {
             let targetGeneration = snapshotGeneration
@@ -628,13 +579,5 @@ final class StickyNotesStore: ObservableObject {
             }
             await self?.syncNow()
         }
-    }
-}
-
-private struct StickyNotesCloudSyncError: LocalizedError {
-    let message: String
-
-    var errorDescription: String? {
-        message
     }
 }
