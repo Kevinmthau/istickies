@@ -49,47 +49,59 @@ enum StickyNoteDisplayOrder {
 }
 
 struct StickyNoteCardView: View {
-    let note: StickyNote
+    @ObservedObject private var noteObservation: StickyNoteObservation
+
+    init(noteObservation: StickyNoteObservation) {
+        self._noteObservation = ObservedObject(wrappedValue: noteObservation)
+    }
 
     var body: some View {
-        StickyNoteCardChrome(color: note.color.tint) {
-            VStack(alignment: .leading, spacing: 8) {
-                if note.needsCloudUpload {
-                    HStack {
-                        Spacer()
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+        if let note = noteObservation.note {
+            StickyNoteCardChrome(color: note.color.tint) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if note.needsCloudUpload {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                }
 
-                Text(note.content.isEmpty ? "Empty Note" : note.content)
-                    .font(StickyNoteTypography.bodyFont)
-                    .foregroundStyle(.black)
-                    .lineLimit(8)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    Text(note.content.isEmpty ? "Empty Note" : note.content)
+                        .font(StickyNoteTypography.bodyFont)
+                        .foregroundStyle(.black)
+                        .lineLimit(8)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                }
             }
         }
     }
 }
 
 struct HomeScreenStickyNoteEditorCardView: View {
-    let note: StickyNote
+    @ObservedObject private var noteObservation: StickyNoteObservation
+
+    init(noteObservation: StickyNoteObservation) {
+        self._noteObservation = ObservedObject(wrappedValue: noteObservation)
+    }
 
     var body: some View {
-        StickyNoteCardChrome(color: note.color.tint) {
-            VStack(alignment: .leading, spacing: 8) {
-                if note.needsCloudUpload {
-                    HStack {
-                        Spacer()
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+        if let note = noteObservation.note {
+            StickyNoteCardChrome(color: note.color.tint) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if note.needsCloudUpload {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                }
 
-                StickyNoteEditor(noteID: note.id, autoFocusOnAppear: true)
+                    StickyNoteEditor(noteID: note.id, autoFocusOnAppear: true)
+                }
             }
         }
     }
@@ -152,11 +164,15 @@ struct MobileNotesSceneView: View {
                 } else {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: StickyNoteCardLayout.gridSpacing) {
-                            ForEach(orderedNotes) { note in
-                                if editingNoteID == note.id {
-                                    HomeScreenStickyNoteEditorCardView(note: note)
+                            ForEach(orderedNoteIDs, id: \.self) { noteID in
+                                if editingNoteID == noteID {
+                                    HomeScreenStickyNoteEditorCardView(
+                                        noteObservation: store.noteObservation(withID: noteID)
+                                    )
                                 } else {
-                                    StickyNoteCardView(note: note)
+                                    StickyNoteCardView(
+                                        noteObservation: store.noteObservation(withID: noteID)
+                                    )
                                         .contentShape(
                                             RoundedRectangle(
                                                 cornerRadius: StickyNoteCardLayout.cornerRadius,
@@ -164,10 +180,10 @@ struct MobileNotesSceneView: View {
                                             )
                                         )
                                         .onTapGesture {
-                                            beginEditing(noteID: note.id)
+                                            beginEditing(noteID: noteID)
                                         }
                                         .onLongPressGesture {
-                                            noteToDelete = note.id
+                                            noteToDelete = noteID
                                         }
                                 }
                             }
@@ -241,14 +257,13 @@ struct MobileNotesSceneView: View {
         .modifier(StickyNotesSyncModifier(store: store))
     }
 
-    private var orderedNotes: [StickyNote] {
+    private var orderedNoteIDs: [String] {
         let latestIDs = store.noteIDs
-        let orderedIDs = StickyNoteDisplayOrder.reconciledIDs(
+        return StickyNoteDisplayOrder.reconciledIDs(
             currentIDs: displayOrderIDs,
             latestIDs: latestIDs,
             preserveCurrentOrder: editingNoteID != nil
         )
-        return store.notes(orderedBy: orderedIDs)
     }
 
     private var deleteDialogBinding: Binding<Bool> {
@@ -263,7 +278,7 @@ struct MobileNotesSceneView: View {
     }
 
     private func beginEditing(noteID: String) {
-        displayOrderIDs = orderedNotes.map(\.id)
+        displayOrderIDs = orderedNoteIDs
         editingNoteID = noteID
     }
 

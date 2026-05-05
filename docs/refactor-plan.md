@@ -393,13 +393,16 @@ Normalize store state into `notesByID` and ordered IDs. This is more invasive an
 
 Completed work:
 
-1. `StickyNotesStore` now keeps `notesByID` plus ordered note IDs as the internal source of truth and publishes `notes` as a derived ordered snapshot for existing UI compatibility.
+1. `StickyNotesStore` now keeps `notesByID` plus ordered note IDs as the internal source of truth and maintains `notes` as a derived ordered snapshot for existing API/test compatibility.
 2. Targeted note mutations update ID-indexed storage directly instead of searching and rewriting the published array first.
 3. Note creation, conflict-copy creation, content/color edits, frame/window-state changes, `openAllNotes`, deletion, load, persistence, and sync application now route through the normalized storage helpers.
 4. The mobile dashboard and macOS window ordering paths use `store.noteIDs` instead of rebuilding ID arrays from `store.notes`.
 5. Added focused store coverage for ordered IDs, lookup, non-sorting frame updates, content-edit reordering, custom ordered access, and deletion.
+6. `StickyNotesStore.notes` is now a compatibility snapshot instead of the broad published update surface. The store publishes narrower ordered-ID and open-ID streams for list/window lifecycle work.
+7. Added note-specific `StickyNoteObservation` objects and moved editor, dashboard card, and macOS sticky-window updates onto those note-scoped observations.
+8. Content-edit snapshot persistence is now coalesced during sustained editing, while `flushPendingPersistence()` forces any delayed write before backgrounding or tests reload local state.
 
-Remaining follow-up: continue narrowing publication boundaries so one note edit does not require every subscriber to consume a full `[StickyNote]` snapshot, and coalesce local snapshot writes more aggressively during sustained editing.
+Remaining follow-up: keep reducing remaining broad `StickyNotesStore` observation in wrapper views, and decide whether the compatibility `notes` snapshot should remain as a read-only convenience or be replaced by narrower accessors everywhere.
 
 ## Performance plan
 
@@ -407,8 +410,9 @@ Remaining follow-up: continue narrowing publication boundaries so one note edit 
 
 1. Collect macOS windows to close before mutating the coordinator dictionary.
 2. Avoid rebuilding note dictionaries in dashboard/window paths when the store already maintains `notesByID`.
-   - Status: implemented for dashboard ordered lookups and macOS window ordering; `syncWindows(with:)` still builds a note dictionary from the published snapshot it receives.
+   - Status: implemented for dashboard ordered lookups and macOS window ordering; `syncWindows` now consumes published open note IDs instead of rebuilding a note dictionary from a full published snapshot.
 3. Coalesce local snapshot writes more aggressively during editing.
+   - Status: implemented for content edits. Create/delete/sync and other lifecycle changes still persist immediately.
 4. Avoid resorting on every content flush unless order actually changes.
    - Status: partially implemented. Targeted mutations now reposition a changed note ID instead of sorting and rebuilding the whole note array first.
 
@@ -417,6 +421,7 @@ Remaining follow-up: continue narrowing publication boundaries so one note edit 
 1. Seed or persist the CloudKit remote cache to avoid full-zone hydration on every cold launch.
 2. Normalize store state into ID-indexed storage plus ordered IDs.
 3. Publish narrower state changes so one note edit does not make every subscriber recompute.
+   - Status: partially implemented with note-scoped observations plus ordered/open ID publishers.
 4. Move conflict/version metadata away from client-clock-only `lastModified`.
 
 ## Hardening plan
@@ -453,4 +458,4 @@ Remaining follow-up: continue narrowing publication boundaries so one note edit 
 
 ## Best next implementation prompt
 
-Continue Stage 5 UI-churn reduction: now that `StickyNotesStore` has ID-indexed storage plus ordered IDs internally, introduce narrower store observation/access patterns for note-specific editor/window updates and coalesce local snapshot writes during sustained editing while preserving existing sync and persistence semantics.
+Continue Stage 5 cleanup: audit the remaining `StickyNotesStore` environment-object wrappers and compatibility `notes` consumers, then replace any broad observation that is not needed for sync/status/list lifecycle with note-scoped observations or ordered-ID accessors.

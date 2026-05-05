@@ -79,9 +79,7 @@ enum StickyNoteTypography {
 }
 
 struct StickyNoteEditor: View {
-    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var store: StickyNotesStore
-    @StateObject private var draftSession = NoteDraftSession()
 
     let noteID: String
     let autoFocusOnAppear: Bool
@@ -92,7 +90,50 @@ struct StickyNoteEditor: View {
     }
 
     var body: some View {
-        if let note = store.note(withID: noteID) {
+        StickyNoteEditorContent(
+            noteID: noteID,
+            noteObservation: store.noteObservation(withID: noteID),
+            autoFocusOnAppear: autoFocusOnAppear,
+            readPersistedContent: {
+                store.note(withID: noteID)?.content
+            },
+            persistDraftContent: { content, expectedBaseContent in
+                store.updateContent(
+                    id: noteID,
+                    content: content,
+                    expectedBaseContent: expectedBaseContent
+                )
+            }
+        )
+    }
+}
+
+private struct StickyNoteEditorContent: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var noteObservation: StickyNoteObservation
+    @StateObject private var draftSession = NoteDraftSession()
+
+    let noteID: String
+    let autoFocusOnAppear: Bool
+    let readPersistedContent: @MainActor () -> String?
+    let persistDraftContent: @MainActor (String, String) -> StickyNoteDraftPersistenceResult
+
+    init(
+        noteID: String,
+        noteObservation: StickyNoteObservation,
+        autoFocusOnAppear: Bool,
+        readPersistedContent: @escaping @MainActor () -> String?,
+        persistDraftContent: @escaping @MainActor (String, String) -> StickyNoteDraftPersistenceResult
+    ) {
+        self.noteID = noteID
+        self._noteObservation = ObservedObject(wrappedValue: noteObservation)
+        self.autoFocusOnAppear = autoFocusOnAppear
+        self.readPersistedContent = readPersistedContent
+        self.persistDraftContent = persistDraftContent
+    }
+
+    var body: some View {
+        if let note = noteObservation.note {
             configuredEditor(for: note)
         } else {
             ContentUnavailableView("Note Not Found", systemImage: "note.text")
@@ -120,7 +161,7 @@ struct StickyNoteEditor: View {
                 configureDraftSession(with: note)
             }
             .onChange(of: noteID) { _, _ in
-                guard let latestNote = store.note(withID: noteID) else { return }
+                guard let latestNote = noteObservation.note else { return }
                 configureDraftSession(with: latestNote, force: true)
             }
             .onChange(of: note.content) { _, newValue in
@@ -149,23 +190,12 @@ struct StickyNoteEditor: View {
     }
 
     private func configureDraftSession(with note: StickyNote, force: Bool = false) {
-        let store = self.store
-        let currentNoteID = noteID
-
         draftSession.configure(
-            noteID: currentNoteID,
+            noteID: noteID,
             initialContent: note.content,
             force: force,
-            readPersistedContent: {
-                store.note(withID: currentNoteID)?.content
-            },
-            persistDraftContent: { content, expectedBaseContent in
-                store.updateContent(
-                    id: currentNoteID,
-                    content: content,
-                    expectedBaseContent: expectedBaseContent
-                )
-            }
+            readPersistedContent: readPersistedContent,
+            persistDraftContent: persistDraftContent
         )
     }
 }
@@ -182,7 +212,32 @@ struct NoteEditorView: View {
     }
 
     var body: some View {
-        if let note = store.note(withID: noteID) {
+        NoteEditorContent(
+            noteID: noteID,
+            noteObservation: store.noteObservation(withID: noteID),
+            autoFocusOnAppear: autoFocusOnAppear
+        )
+    }
+}
+
+private struct NoteEditorContent: View {
+    @ObservedObject private var noteObservation: StickyNoteObservation
+
+    let noteID: String
+    let autoFocusOnAppear: Bool
+
+    init(
+        noteID: String,
+        noteObservation: StickyNoteObservation,
+        autoFocusOnAppear: Bool
+    ) {
+        self.noteID = noteID
+        self._noteObservation = ObservedObject(wrappedValue: noteObservation)
+        self.autoFocusOnAppear = autoFocusOnAppear
+    }
+
+    var body: some View {
+        if let note = noteObservation.note {
 #if os(macOS)
             StickyNoteEditor(noteID: noteID, autoFocusOnAppear: autoFocusOnAppear)
                 .background(note.color.tint)

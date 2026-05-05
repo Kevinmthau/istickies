@@ -15,18 +15,21 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
     init(store: StickyNotesStore) {
         self.store = store
 
-        store.$notes
+        store.$openNoteIDs
             .receive(on: RunLoop.main)
-            .sink { [weak self] notes in
-                self?.syncWindows(with: notes)
+            .sink { [weak self] openNoteIDs in
+                self?.syncWindows(withOpenNoteIDs: openNoteIDs)
             }
             .store(in: &cancellables)
 
         store.$hasFinishedInitialLoad
-            .combineLatest(store.$notes)
+            .combineLatest(store.$noteIDs)
             .receive(on: RunLoop.main)
-            .sink { [weak self] hasFinishedInitialLoad, notes in
-                self?.bootstrapIfNeeded(hasFinishedInitialLoad: hasFinishedInitialLoad, notes: notes)
+            .sink { [weak self] hasFinishedInitialLoad, noteIDs in
+                self?.bootstrapIfNeeded(
+                    hasFinishedInitialLoad: hasFinishedInitialLoad,
+                    noteIDs: noteIDs
+                )
             }
             .store(in: &cancellables)
     }
@@ -38,13 +41,13 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
 
     func focus(noteID: String) {
         store.openNote(id: noteID)
-        syncWindows(with: store.notes)
+        syncWindows(withOpenNoteIDs: store.openNoteIDs)
         bringAllWindowsToFront(prioritizing: noteID)
     }
 
     func showAllNotes() {
         store.openAllNotes()
-        syncWindows(with: store.notes)
+        syncWindows(withOpenNoteIDs: store.openNoteIDs)
         bringAllWindowsToFront(prioritizing: windowOrder.last ?? store.noteIDs.first)
     }
 
@@ -53,46 +56,44 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
         stickyWindow.requestDeletionConfirmation()
     }
 
-    private func bootstrapIfNeeded(hasFinishedInitialLoad: Bool, notes: [StickyNote]) {
+    private func bootstrapIfNeeded(hasFinishedInitialLoad: Bool, noteIDs: [String]) {
         guard hasFinishedInitialLoad, !hasPresentedInitialNotes else { return }
         hasPresentedInitialNotes = true
 
-        if notes.isEmpty {
+        if noteIDs.isEmpty {
             createAndFocusNote()
         } else {
             showAllNotes()
         }
     }
 
-    private func syncWindows(with notes: [StickyNote]) {
-        let notesByID = Dictionary(uniqueKeysWithValues: notes.map { ($0.id, $0) })
+    private func syncWindows(withOpenNoteIDs openNoteIDs: [String]) {
+        let openNoteIDSet = Set(openNoteIDs)
 
-        for note in notes where note.isOpen {
-            if let window = windows[note.id] {
-                window.apply(note: note)
-            } else {
-                let offset = CGFloat(windows.count % 8) * 24
-                let window = StickyNoteWindow(
-                    note: note,
-                    store: store,
-                    cascadeOffset: offset,
-                    onActivate: { [weak self] noteID in
-                        self?.bringAllWindowsToFront(prioritizing: noteID)
-                    },
-                    onClose: { [weak self] noteID in
-                        self?.windows.removeValue(forKey: noteID)
-                        self?.windowOrder.removeAll { $0 == noteID }
-                    }
-                )
+        for noteID in openNoteIDs where windows[noteID] == nil {
+            guard let note = store.note(withID: noteID) else { continue }
 
-                windows[note.id] = window
-                promoteWindow(note.id)
-                window.makeKeyAndOrderFront(nil)
-            }
+            let offset = CGFloat(windows.count % 8) * 24
+            let window = StickyNoteWindow(
+                note: note,
+                store: store,
+                cascadeOffset: offset,
+                onActivate: { [weak self] noteID in
+                    self?.bringAllWindowsToFront(prioritizing: noteID)
+                },
+                onClose: { [weak self] noteID in
+                    self?.windows.removeValue(forKey: noteID)
+                    self?.windowOrder.removeAll { $0 == noteID }
+                }
+            )
+
+            windows[noteID] = window
+            promoteWindow(noteID)
+            window.makeKeyAndOrderFront(nil)
         }
 
         let windowsToClose = windows.filter { id, _ in
-            notesByID[id]?.isOpen != true
+            !openNoteIDSet.contains(id)
         }
 
         for (_, window) in windowsToClose {
@@ -155,6 +156,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     let noteID: String
 
     private let store: StickyNotesStore
+    private let noteObservation: StickyNoteObservation
     private let onActivate: (String) -> Void
     private let onClose: (String) -> Void
     private var isPresentingDeleteConfirmation = false
@@ -177,6 +179,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         }
     )
     private var terminationObserver: NSObjectProtocol?
+    private var noteObservationCancellable: AnyCancellable?
 
     init(
         note: StickyNote,
@@ -187,6 +190,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     ) {
         self.noteID = note.id
         self.store = store
+        self.noteObservation = store.noteObservation(withID: note.id)
         self.onActivate = onActivate
         self.onClose = onClose
 
@@ -232,6 +236,21 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
                 self?.isClosingForApplicationTermination = true
             }
         }
+
+        noteObservationCancellable = noteObservation.$note
+            .receive(on: RunLoop.main)
+            .sink { [weak self] note in
+                guard let self else { return }
+
+                guard let note, note.isOpen else {
+                    if !self.isClosingFromCoordinator {
+                        self.closeFromCoordinator()
+                    }
+                    return
+                }
+
+                self.apply(note: note)
+            }
 
         apply(note: note, forceFrame: true)
     }

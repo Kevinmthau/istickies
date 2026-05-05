@@ -6,6 +6,7 @@
 //
 
 import CloudKit
+import Combine
 import Foundation
 import Testing
 @testable import iStickies
@@ -1497,6 +1498,69 @@ struct iStickiesTests {
         #expect(store.note(withID: newerNote.id) == nil)
         #expect(store.noteIDs == [olderNote.id])
         #expect(store.notes.map(\.id) == [olderNote.id])
+    }
+
+    @Test func noteObservationOnlyPublishesTargetedNoteChanges() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let firstNote = StickyNote(
+            id: "first-note",
+            content: "First",
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            needsCloudUpload: false
+        )
+        let secondNote = StickyNote(
+            id: "second-note",
+            content: "Second",
+            createdAt: Date(timeIntervalSince1970: 30),
+            lastModified: Date(timeIntervalSince1970: 40),
+            needsCloudUpload: false
+        )
+        try await fileStore.save(StickyNotesSnapshot(notes: [firstNote, secondNote]))
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: MockCloudService(), autoLoad: false)
+
+        await store.load()
+
+        let firstObservation = store.noteObservation(withID: firstNote.id)
+        var observedFirstContents: [String?] = []
+        let cancellable = firstObservation.$note
+            .dropFirst()
+            .sink { note in
+                observedFirstContents.append(note?.content)
+            }
+
+        store.updateContent(id: secondNote.id, content: "Second edited")
+        #expect(observedFirstContents.isEmpty)
+
+        store.updateContent(id: firstNote.id, content: "First edited")
+        #expect(observedFirstContents == ["First edited"])
+
+        _ = cancellable
+    }
+
+    @Test func contentEditsCoalesceSnapshotPersistenceUntilFlush() async throws {
+        let fileURL = temporaryStoreURL()
+        let fileStore = StickyNotesFileStore(fileURL: fileURL)
+        let note = StickyNote(
+            id: "editable-note",
+            content: "Original",
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: Date(timeIntervalSince1970: 20),
+            needsCloudUpload: false
+        )
+        try await fileStore.save(StickyNotesSnapshot(notes: [note]))
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: MockCloudService(), autoLoad: false)
+
+        await store.load()
+        store.updateContent(id: note.id, content: "Edited")
+
+        let snapshotBeforeFlush = try await StickyNotesFileStore(fileURL: fileURL).load()
+        #expect(snapshotBeforeFlush.notes.first?.content == "Original")
+
+        await store.flushPendingPersistence()
+
+        let snapshotAfterFlush = try await StickyNotesFileStore(fileURL: fileURL).load()
+        #expect(snapshotAfterFlush.notes.first?.content == "Edited")
     }
 
     @Test func newerRemoteVersionCreatesConflictCopy() async throws {

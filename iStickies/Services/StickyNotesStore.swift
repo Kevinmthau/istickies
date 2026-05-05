@@ -3,6 +3,7 @@ import OSLog
 import SwiftUI
 
 private let stickyNotesDefaultCloudSyncDelay: TimeInterval = 0.75
+private let stickyNotesContentPersistenceDelay: TimeInterval = 0.5
 
 enum StickyNotesSyncState: Equatable {
     case idle
@@ -28,14 +29,17 @@ enum StickyNoteDraftPersistenceResult: Equatable {
 @MainActor
 final class StickyNotesStore: ObservableObject {
     private struct CommitOptions {
+        var persistenceDelay: TimeInterval?
         var resortNotes = false
         var resortNoteID: String?
         var syncDelay: TimeInterval?
     }
 
-    @Published private(set) var notes: [StickyNote] = []
+    private(set) var notes: [StickyNote] = []
     private var notesByID: [String: StickyNote] = [:]
     private var orderedNoteIDs: [String] = []
+    @Published private(set) var noteIDs: [String] = []
+    @Published private(set) var openNoteIDs: [String] = []
     @Published private(set) var syncState: StickyNotesSyncState = .idle
     @Published private(set) var lastSuccessfulCloudSync: Date?
     @Published private(set) var hasFinishedInitialLoad = false
@@ -49,10 +53,12 @@ final class StickyNotesStore: ObservableObject {
     private var hasLoaded = false
     private var isSynchronizing = false
     private var scheduledSyncTask: Task<Void, Never>?
+    private var scheduledPersistenceTask: Task<Void, Never>?
     private var persistenceTask: Task<Void, Never>?
     private var snapshotGeneration = 0
     private var cachedCloudPersistedState = StickyNotesCloudPersistedState()
     private var hasLocalLoadFailure = false
+    private var noteObservations: [String: StickyNoteObservation] = [:]
 
     init(
         fileStore: StickyNotesFileStore = StickyNotesFileStore(),
@@ -119,12 +125,19 @@ final class StickyNotesStore: ObservableObject {
         notesByID[id]
     }
 
-    var noteIDs: [String] {
-        orderedNoteIDs
-    }
-
     func notes(orderedBy ids: [String]) -> [StickyNote] {
         ids.compactMap { notesByID[$0] }
+    }
+
+    func noteObservation(withID id: String) -> StickyNoteObservation {
+        if let observation = noteObservations[id] {
+            observation.update(note: notesByID[id])
+            return observation
+        }
+
+        let observation = StickyNoteObservation(noteID: id, note: notesByID[id])
+        noteObservations[id] = observation
+        return observation
     }
 
     @discardableResult
@@ -143,7 +156,11 @@ final class StickyNotesStore: ObservableObject {
         mutateNote(
             id: id,
             touchModifiedAt: true,
-            commitOptions: CommitOptions(resortNoteID: id, syncDelay: stickyNotesDefaultCloudSyncDelay)
+            commitOptions: CommitOptions(
+                persistenceDelay: stickyNotesContentPersistenceDelay,
+                resortNoteID: id,
+                syncDelay: stickyNotesDefaultCloudSyncDelay
+            )
         ) { note in
             note.content = content
         }
@@ -164,7 +181,11 @@ final class StickyNotesStore: ObservableObject {
         guard currentNote.content == expectedBaseContent else {
             let conflictCopy = makeDraftConflictCopy(from: currentNote, content: content)
             commitStateChange(
-                CommitOptions(resortNoteID: conflictCopy.id, syncDelay: stickyNotesDefaultCloudSyncDelay)
+                CommitOptions(
+                    persistenceDelay: stickyNotesContentPersistenceDelay,
+                    resortNoteID: conflictCopy.id,
+                    syncDelay: stickyNotesDefaultCloudSyncDelay
+                )
             ) {
                 addStoredNote(conflictCopy)
                 return true
@@ -179,7 +200,11 @@ final class StickyNotesStore: ObservableObject {
         mutateNote(
             id: id,
             touchModifiedAt: true,
-            commitOptions: CommitOptions(resortNoteID: id, syncDelay: stickyNotesDefaultCloudSyncDelay)
+            commitOptions: CommitOptions(
+                persistenceDelay: stickyNotesContentPersistenceDelay,
+                resortNoteID: id,
+                syncDelay: stickyNotesDefaultCloudSyncDelay
+            )
         ) { note in
             note.content = content
         }
@@ -446,12 +471,14 @@ final class StickyNotesStore: ObservableObject {
     }
 
     private func replaceStoredNotes(with newNotes: [StickyNote], sort: Bool) {
+        let previousNotesByID = notesByID
         notesByID = Dictionary(uniqueKeysWithValues: newNotes.map { ($0.id, $0) })
         orderedNoteIDs = newNotes.map(\.id)
         if sort {
             orderedNoteIDs = sortedNoteIDs(orderedNoteIDs)
         }
-        publishStoredNotes()
+        publishStoredState()
+        publishChangedNoteObservations(comparedTo: previousNotesByID)
     }
 
     private func resortStoredNote(id: String) {
@@ -471,10 +498,36 @@ final class StickyNotesStore: ObservableObject {
         orderedNoteIDs.insert(id, at: insertionIndex)
     }
 
-    private func publishStoredNotes() {
+    private func publishStoredState() {
         let orderedNotes = orderedStoredNotes
-        guard notes != orderedNotes else { return }
-        notes = orderedNotes
+        if notes != orderedNotes {
+            notes = orderedNotes
+        }
+
+        if noteIDs != orderedNoteIDs {
+            noteIDs = orderedNoteIDs
+        }
+
+        let orderedOpenNoteIDs = orderedNoteIDs.filter { notesByID[$0]?.isOpen == true }
+        if openNoteIDs != orderedOpenNoteIDs {
+            openNoteIDs = orderedOpenNoteIDs
+        }
+    }
+
+    private func publishChangedNoteObservations(comparedTo previousNotesByID: [String: StickyNote]) {
+        let currentIDs = Set(notesByID.keys)
+        let previousIDs = Set(previousNotesByID.keys)
+        let changedIDs = currentIDs.union(previousIDs).filter { id in
+            notesByID[id] != previousNotesByID[id]
+        }
+
+        for id in changedIDs {
+            noteObservations[id]?.update(note: notesByID[id])
+        }
+
+        noteObservations = noteObservations.filter { id, observation in
+            notesByID[id] != nil || observation.note != nil
+        }
     }
 
     private func makeDraftConflictCopy(from note: StickyNote, content: String) -> StickyNote {
@@ -525,6 +578,7 @@ final class StickyNotesStore: ObservableObject {
         _ options: CommitOptions = CommitOptions(),
         mutation: () -> Bool
     ) {
+        let previousNotesByID = notesByID
         guard mutation() else { return }
 
         if let resortNoteID = options.resortNoteID {
@@ -533,15 +587,42 @@ final class StickyNotesStore: ObservableObject {
             orderedNoteIDs = sortedNoteIDs(orderedNoteIDs)
         }
 
-        publishStoredNotes()
-        persistSnapshot()
+        publishStoredState()
+        publishChangedNoteObservations(comparedTo: previousNotesByID)
+        scheduleSnapshotPersistence(after: options.persistenceDelay)
 
         if let delay = options.syncDelay {
             scheduleCloudSync(after: delay)
         }
     }
 
+    private func scheduleSnapshotPersistence(after delay: TimeInterval?) {
+        guard let delay, delay > 0 else {
+            persistSnapshot()
+            return
+        }
+
+        scheduledPersistenceTask?.cancel()
+        scheduledPersistenceTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+            self?.scheduledPersistenceTask = nil
+            self?.persistSnapshotNow()
+        }
+    }
+
     private func persistSnapshot() {
+        scheduledPersistenceTask?.cancel()
+        scheduledPersistenceTask = nil
+        persistSnapshotNow()
+    }
+
+    private func persistSnapshotNow() {
         guard !hasLocalLoadFailure else {
             StickyNotesLog.persistence.warning(
                 "Snapshot persistence skipped after unrecoverable local load failure"
@@ -611,6 +692,12 @@ final class StickyNotesStore: ObservableObject {
     }
 
     func flushPendingPersistence() async {
+        if scheduledPersistenceTask != nil {
+            scheduledPersistenceTask?.cancel()
+            scheduledPersistenceTask = nil
+            persistSnapshotNow()
+        }
+
         while true {
             let targetGeneration = snapshotGeneration
             let persistenceTask = persistenceTask
