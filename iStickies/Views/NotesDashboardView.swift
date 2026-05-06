@@ -173,9 +173,9 @@ struct MobileNotesSceneView: View {
 
 private struct MobileNotesSceneContent: View {
     let store: StickyNotesStore
-    let statusObservation: StickyNotesStatusObservation
 
     @ObservedObject private var noteListObservation: StickyNotesListObservation
+    @ObservedObject private var statusObservation: StickyNotesStatusObservation
 
     @State private var editingNoteID: String?
     @State private var displayOrderIDs: [String] = []
@@ -192,8 +192,8 @@ private struct MobileNotesSceneContent: View {
         statusObservation: StickyNotesStatusObservation
     ) {
         self.store = store
-        self.statusObservation = statusObservation
         self._noteListObservation = ObservedObject(wrappedValue: noteListObservation)
+        self._statusObservation = ObservedObject(wrappedValue: statusObservation)
     }
 
     var body: some View {
