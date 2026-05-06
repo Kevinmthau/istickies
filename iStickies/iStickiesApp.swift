@@ -10,7 +10,13 @@ struct iStickiesApp: App {
 #endif
 
     init() {
-        let store = StickyNotesStore(autoLoad: !StickyNotesRuntime.isRunningHostedUnitTests)
+        StickyNotesRuntime.prepareStoreForLaunchIfNeeded()
+
+        let store = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: StickyNotesRuntime.fileStoreURL),
+            cloudService: StickyNotesRuntime.cloudService,
+            autoLoad: !StickyNotesRuntime.isRunningHostedUnitTests
+        )
         _store = StateObject(wrappedValue: store)
 
 #if os(macOS)
@@ -97,9 +103,59 @@ private struct StickyNotesCommands: Commands {
 #endif
 
 private enum StickyNotesRuntime {
+    private static let environment = ProcessInfo.processInfo.environment
+
     static var isRunningHostedUnitTests: Bool {
         NSClassFromString("XCTestCase") != nil
             && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    static var fileStoreURL: URL {
+        guard let namespace = sanitizedStoreNamespace else {
+            return StickyNotesFileStore.defaultFileURL()
+        }
+
+        let baseIdentifier = Bundle.main.bundleIdentifier ?? "com.mushpot.iStickies"
+        return StickyNotesFileStore.defaultFileURL(bundleIdentifier: "\(baseIdentifier).\(namespace)")
+    }
+
+    static var cloudService: any StickyNotesCloudSyncing {
+        if environment["ISTICKIES_USE_LOCAL_CLOUD"] == "1" {
+            return LocalOnlyStickyNotesCloudService()
+        }
+
+        return StickyNotesCloudServiceFactory.makeDefaultService()
+    }
+
+    static func prepareStoreForLaunchIfNeeded() {
+        guard environment["ISTICKIES_SEED_CORRUPT_STORE"] == "1" else { return }
+        guard sanitizedStoreNamespace != nil else { return }
+
+        let fileURL = fileStoreURL
+        do {
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+            try Data("not json".utf8).write(to: fileURL, options: .atomic)
+        } catch {
+            StickyNotesLog.persistence.error(
+                "Failed to seed corrupt UI-test snapshot: \(error.localizedDescription, privacy: .private)"
+            )
+        }
+    }
+
+    private static var sanitizedStoreNamespace: String? {
+        guard let namespace = environment["ISTICKIES_STORE_NAMESPACE"], !namespace.isEmpty else {
+            return nil
+        }
+
+        let sanitized = namespace.filter { character in
+            character.isLetter || character.isNumber || character == "-" || character == "_"
+        }
+
+        return sanitized.isEmpty ? nil : sanitized
     }
 }
 

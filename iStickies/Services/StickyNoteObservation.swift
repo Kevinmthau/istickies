@@ -45,24 +45,28 @@ final class StickyNotesStatusObservation: ObservableObject {
     @Published private(set) var lastSuccessfulCloudSync: Date?
     @Published private(set) var hasFinishedInitialLoad: Bool
     @Published private(set) var lastErrorMessage: String?
+    @Published private(set) var localRecoveryIssue: StickyNotesLocalRecoveryIssue?
 
     init(
         syncState: StickyNotesSyncState = .idle,
         lastSuccessfulCloudSync: Date? = nil,
         hasFinishedInitialLoad: Bool = false,
-        lastErrorMessage: String? = nil
+        lastErrorMessage: String? = nil,
+        localRecoveryIssue: StickyNotesLocalRecoveryIssue? = nil
     ) {
         self.syncState = syncState
         self.lastSuccessfulCloudSync = lastSuccessfulCloudSync
         self.hasFinishedInitialLoad = hasFinishedInitialLoad
         self.lastErrorMessage = lastErrorMessage
+        self.localRecoveryIssue = localRecoveryIssue
     }
 
     func update(
         syncState: StickyNotesSyncState,
         lastSuccessfulCloudSync: Date?,
         hasFinishedInitialLoad: Bool,
-        lastErrorMessage: String?
+        lastErrorMessage: String?,
+        localRecoveryIssue: StickyNotesLocalRecoveryIssue?
     ) {
         if self.syncState != syncState {
             self.syncState = syncState
@@ -78,6 +82,10 @@ final class StickyNotesStatusObservation: ObservableObject {
 
         if self.lastErrorMessage != lastErrorMessage {
             self.lastErrorMessage = lastErrorMessage
+        }
+
+        if self.localRecoveryIssue != localRecoveryIssue {
+            self.localRecoveryIssue = localRecoveryIssue
         }
     }
 }

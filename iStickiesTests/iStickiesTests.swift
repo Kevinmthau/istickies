@@ -553,6 +553,56 @@ struct iStickiesTests {
         }
     }
 
+    @Test func unrecoverableLocalSnapshotPublishesRecoveryIssue() async throws {
+        let fileURL = temporaryStoreURL()
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try Data("not json".utf8).write(to: fileURL, options: .atomic)
+        let store = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: fileURL),
+            cloudService: MockCloudService(),
+            autoLoad: false
+        )
+        let statusObservation = store.syncStatusObservation()
+
+        await store.load()
+
+        #expect(store.localRecoveryIssue?.title == "Notes Need Recovery")
+        #expect(statusObservation.localRecoveryIssue?.title == "Notes Need Recovery")
+        #expect(statusObservation.lastErrorMessage?.hasPrefix("Failed to restore notes locally:") == true)
+    }
+
+    @Test func startFreshAfterLocalSnapshotFailurePersistsNewSnapshot() async throws {
+        let fileURL = temporaryStoreURL()
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try Data("not json".utf8).write(to: fileURL, options: .atomic)
+        let cloudService = MockCloudService()
+        let store = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: fileURL),
+            cloudService: cloudService,
+            autoLoad: false
+        )
+
+        await store.load()
+        await store.startFreshAfterLocalSnapshotFailure()
+        let noteID = store.createNote()
+        await store.flushPendingPersistence()
+
+        #expect(store.localRecoveryIssue == nil)
+        #expect(store.syncState == .idle)
+        let loadedSnapshot = try await StickyNotesFileStore(fileURL: fileURL).load()
+        #expect(loadedSnapshot.notes.map(\.id) == [noteID])
+        let remoteNotes = await cloudService.snapshot()
+        #expect(remoteNotes.isEmpty)
+    }
+
     @Test func loadNormalizesSavedNotesToYellow() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let storedNote = StickyNote(

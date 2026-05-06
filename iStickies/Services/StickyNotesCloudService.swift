@@ -142,6 +142,43 @@ actor DisabledStickyNotesCloudService: StickyNotesCloudSyncing {
     }
 }
 
+actor LocalOnlyStickyNotesCloudService: StickyNotesCloudSyncing {
+    private var remoteNotesByID: [String: StickyNote] = [:]
+
+    func restore(persistedState: StickyNotesCloudPersistedState) async {
+        remoteNotesByID = Dictionary(uniqueKeysWithValues: persistedState.remoteNotes.map {
+            ($0.id, $0.markedClean())
+        })
+    }
+
+    func currentPersistedState() async -> StickyNotesCloudPersistedState {
+        StickyNotesCloudPersistedState(remoteNotes: Array(remoteNotesByID.values).map {
+            $0.markedClean()
+        })
+    }
+
+    func fetchAllNotes() async throws -> CloudRemoteSnapshot {
+        CloudRemoteSnapshot.complete(notes: Array(remoteNotesByID.values))
+    }
+
+    func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {
+        var result = CloudSyncBatchResult()
+
+        for note in saves {
+            let cleanNote = note.markedClean()
+            remoteNotesByID[note.id] = cleanNote
+            result.savedNotes.append(cleanNote)
+        }
+
+        for id in deletions {
+            remoteNotesByID.removeValue(forKey: id)
+            result.deletedNoteIDs.append(id)
+        }
+
+        return result
+    }
+}
+
 actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     private let container: CKContainer
     private let database: CKDatabase

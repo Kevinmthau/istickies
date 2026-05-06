@@ -288,6 +288,8 @@ for (_, window) in windowsToClose {
 
 ### P2: UI tests are mostly template scaffolding
 
+**Status:** Implemented for the initial create/edit/persist/delete and recovery flows. The template UI tests have been replaced with launch-environment-controlled tests that run against isolated store namespaces and a local-only cloud service. macOS coverage includes creating multiple sticky windows and deleting the focused window.
+
 **Why it matters:** The unit tests cover core pure logic well, but UI tests currently only launch the app and measure launch performance. They do not exercise note creation, edit persistence, deletion confirmation, or window behavior.
 
 **Files/functions involved:**
@@ -295,7 +297,7 @@ for (_, window) in windowsToClose {
 - `iStickiesUITests/iStickiesUITests.swift`
 - `iStickiesUITests/iStickiesUITestsLaunchTests.swift`
 
-**Concrete recommendation:** Replace the template UI tests with a small set of launch-argument-controlled flows using an isolated temporary store:
+**Concrete recommendation:** Replace the template UI tests with a small set of launch-environment-controlled flows using an isolated local store namespace:
 
 - create and edit a note
 - relaunch and verify it persists
@@ -303,6 +305,8 @@ for (_, window) in windowsToClose {
 - macOS: open multiple sticky windows and verify close/delete behavior
 
 **Expected payoff:** Better coverage for user-facing regressions.
+
+**Validation note:** The UI test target compiles during the macOS unit-test build. Running the UI tests locally still requires a working macOS UI-test signing/automation setup; in the current environment the unsigned runner is killed before XCTest connects, while normal signing fails because the Mac Development certificate/profile is unavailable.
 
 **Rough implementation scope:** medium.
 
@@ -459,7 +463,8 @@ Remaining follow-up: optional only. Removing the compatibility snapshot would be
 3. Add structured logs for sync state changes, retries, conflict copies, persistence failures, and CloudKit account changes.
    - Status: implemented.
 4. Consider a user-visible recovery path for local snapshot corruption and persistent CloudKit account errors.
+   - Status: implemented for local snapshot corruption with a blocking recovery surface and start-fresh action. Persistent CloudKit errors now expose Retry/Dismiss actions on iOS alerts and a retry banner in macOS sticky windows.
 
 ## Best next implementation prompt
 
-Add a user-visible recovery path for local snapshot corruption and persistent CloudKit account errors, then replace the template UI tests with launch-argument-controlled create/edit/persist/delete flows.
+Run the new UI tests on a machine with macOS UI-test signing available, then continue with optional cleanup such as removing the remaining compatibility `store.notes` snapshot or adding a richer persistent CloudKit account troubleshooting view.

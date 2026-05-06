@@ -76,6 +76,7 @@ struct StickyNoteCardView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 }
             }
+            .accessibilityIdentifier("StickyNotes.noteCard")
         }
     }
 }
@@ -103,6 +104,7 @@ struct HomeScreenStickyNoteEditorCardView: View {
                     StickyNoteEditor(noteID: note.id, autoFocusOnAppear: true)
                 }
             }
+            .accessibilityIdentifier("StickyNotes.noteEditorCard")
         }
     }
 }
@@ -127,8 +129,14 @@ private struct StickyNotesSyncModifier: ViewModifier {
                     Task { await store.flushPendingPersistence() }
                 }
             }
-            .alert("Sync Error", isPresented: syncErrorBinding) {
-                Button("OK") { store.clearLastErrorMessage() }
+            .alert("Sync Issue", isPresented: syncErrorBinding) {
+                Button("Retry") {
+                    store.clearLastErrorMessage()
+                    Task { await store.syncNow() }
+                }
+                Button("Dismiss", role: .cancel) {
+                    store.clearLastErrorMessage()
+                }
             } message: {
                 Text(statusObservation.lastErrorMessage ?? "")
             }
@@ -136,7 +144,10 @@ private struct StickyNotesSyncModifier: ViewModifier {
 
     private var syncErrorBinding: Binding<Bool> {
         Binding(
-            get: { statusObservation.lastErrorMessage != nil },
+            get: {
+                statusObservation.localRecoveryIssue == nil
+                    && statusObservation.lastErrorMessage != nil
+            },
             set: { if !$0 { store.clearLastErrorMessage() } }
         )
     }
@@ -186,77 +197,93 @@ private struct MobileNotesSceneContent: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color(.systemGroupedBackground)
-                    .ignoresSafeArea()
+        Group {
+            if let localRecoveryIssue = statusObservation.localRecoveryIssue {
+                ZStack {
+                    Color(.systemGroupedBackground)
+                        .ignoresSafeArea()
 
-                if noteListObservation.noteIDs.isEmpty {
-                    ContentUnavailableView(
-                        "No Notes",
-                        systemImage: "note.text",
-                        description: Text("Tap + to create a sticky note.")
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: StickyNoteCardLayout.gridSpacing) {
-                            ForEach(orderedNoteIDs, id: \.self) { noteID in
-                                if editingNoteID == noteID {
-                                    HomeScreenStickyNoteEditorCardView(
-                                        noteObservation: store.noteObservation(withID: noteID)
-                                    )
-                                } else {
-                                    StickyNoteCardView(
-                                        noteObservation: store.noteObservation(withID: noteID)
-                                    )
-                                        .contentShape(
-                                            RoundedRectangle(
-                                                cornerRadius: StickyNoteCardLayout.cornerRadius,
-                                                style: .continuous
+                    StickyNotesLocalRecoveryView(issue: localRecoveryIssue) {
+                        Task { await store.startFreshAfterLocalSnapshotFailure() }
+                    }
+                }
+            } else {
+                NavigationStack {
+                    ZStack {
+                        Color(.systemGroupedBackground)
+                            .ignoresSafeArea()
+
+                        if noteListObservation.noteIDs.isEmpty {
+                            ContentUnavailableView(
+                                "No Notes",
+                                systemImage: "note.text",
+                                description: Text("Tap + to create a sticky note.")
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            ScrollView {
+                                LazyVGrid(columns: columns, spacing: StickyNoteCardLayout.gridSpacing) {
+                                    ForEach(orderedNoteIDs, id: \.self) { noteID in
+                                        if editingNoteID == noteID {
+                                            HomeScreenStickyNoteEditorCardView(
+                                                noteObservation: store.noteObservation(withID: noteID)
                                             )
-                                        )
-                                        .onTapGesture {
-                                            beginEditing(noteID: noteID)
+                                        } else {
+                                            StickyNoteCardView(
+                                                noteObservation: store.noteObservation(withID: noteID)
+                                            )
+                                                .contentShape(
+                                                    RoundedRectangle(
+                                                        cornerRadius: StickyNoteCardLayout.cornerRadius,
+                                                        style: .continuous
+                                                    )
+                                                )
+                                                .onTapGesture {
+                                                    beginEditing(noteID: noteID)
+                                                }
+                                                .onLongPressGesture {
+                                                    noteToDelete = noteID
+                                                }
                                         }
-                                        .onLongPressGesture {
-                                            noteToDelete = noteID
-                                        }
+                                    }
                                 }
+                                .padding(StickyNoteCardLayout.outerPadding)
+                                .frame(maxWidth: .infinity, alignment: .top)
                             }
+                            .scrollDismissesKeyboard(.interactively)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                         }
-                        .padding(StickyNoteCardLayout.outerPadding)
-                        .frame(maxWidth: .infinity, alignment: .top)
                     }
-                    .scrollDismissesKeyboard(.interactively)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                }
-            }
-            .navigationTitle("Stickies")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        Task { await store.syncNow() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
+                    .navigationTitle("Stickies")
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button {
+                                Task { await store.syncNow() }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .accessibilityIdentifier("StickyNotes.syncButton")
+                        }
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        let id = store.createNote()
-                        beginEditing(noteID: id)
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                let id = store.createNote()
+                                beginEditing(noteID: id)
+                            } label: {
+                                Image(systemName: "plus")
+                            }
+                            .accessibilityIdentifier("StickyNotes.addNoteButton")
+                        }
 
-                if editingNoteID != nil {
-                    ToolbarItemGroup(placement: .keyboard) {
-                        Spacer()
+                        if editingNoteID != nil {
+                            ToolbarItemGroup(placement: .keyboard) {
+                                Spacer()
 
-                        Button("Done") {
-                            editingNoteID = nil
+                                Button("Done") {
+                                    editingNoteID = nil
+                                }
+                                .accessibilityIdentifier("StickyNotes.doneEditingButton")
+                            }
                         }
                     }
                 }

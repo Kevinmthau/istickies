@@ -1,14 +1,6 @@
-//
-//  iStickiesUITestsLaunchTests.swift
-//  iStickiesUITests
-//
-//  Created by Kevin Thau on 5/15/25.
-//
-
 import XCTest
 
 final class iStickiesUITestsLaunchTests: XCTestCase {
-
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
         true
     }
@@ -18,16 +10,25 @@ final class iStickiesUITestsLaunchTests: XCTestCase {
     }
 
     @MainActor
-    func testLaunch() throws {
+    func testLaunchShowsUsableInitialState() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["ISTICKIES_STORE_NAMESPACE"] = uniqueStoreNamespace()
+        app.launchEnvironment["ISTICKIES_USE_LOCAL_CLOUD"] = "1"
         app.launch()
 
-        // Insert steps here to perform after app launch but before taking a screenshot,
-        // such as logging into a test account or navigating somewhere in the app
+#if os(macOS)
+        XCTAssertTrue(app.textViews["StickyNotes.noteEditor"].firstMatch.waitForExistence(timeout: 6))
+#else
+        XCTAssertTrue(app.staticTexts["No Notes"].waitForExistence(timeout: 6))
+#endif
 
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "Launch Screen"
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    private func uniqueStoreNamespace() -> String {
+        "launch_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
     }
 }

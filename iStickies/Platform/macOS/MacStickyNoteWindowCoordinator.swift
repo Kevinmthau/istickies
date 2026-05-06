@@ -8,6 +8,7 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
     private let store: StickyNotesStore
     private var windows: [String: StickyNoteWindow] = [:]
     private var windowOrder: [String] = []
+    private var recoveryWindow: NSWindow?
     private var cancellables: Set<AnyCancellable> = []
     private var hasPresentedInitialNotes = false
     private var isBringingWindowsToFront = false
@@ -28,36 +29,55 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
             .sink { [weak self] hasFinishedInitialLoad, noteIDs in
                 self?.bootstrapIfNeeded(
                     hasFinishedInitialLoad: hasFinishedInitialLoad,
-                    noteIDs: noteIDs
+                    noteIDs: noteIDs,
+                    localRecoveryIssue: self?.store.localRecoveryIssue
                 )
+            }
+            .store(in: &cancellables)
+
+        store.$localRecoveryIssue
+            .combineLatest(store.$hasFinishedInitialLoad)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] issue, hasFinishedInitialLoad in
+                guard hasFinishedInitialLoad else { return }
+                self?.syncRecoveryWindow(with: issue)
             }
             .store(in: &cancellables)
     }
 
     func createAndFocusNote() {
+        guard store.localRecoveryIssue == nil else { return }
         let id = store.createNote()
         focus(noteID: id)
     }
 
     func focus(noteID: String) {
+        guard store.localRecoveryIssue == nil else { return }
         store.openNote(id: noteID)
         syncWindows(withOpenNoteIDs: store.openNoteIDs)
         bringAllWindowsToFront(prioritizing: noteID)
     }
 
     func showAllNotes() {
+        guard store.localRecoveryIssue == nil else { return }
         store.openAllNotes()
         syncWindows(withOpenNoteIDs: store.openNoteIDs)
         bringAllWindowsToFront(prioritizing: windowOrder.last ?? store.noteIDs.first)
     }
 
     func deleteFocusedNote() {
+        guard store.localRecoveryIssue == nil else { return }
         guard let stickyWindow = NSApp.keyWindow as? StickyNoteWindow else { return }
         stickyWindow.requestDeletionConfirmation()
     }
 
-    private func bootstrapIfNeeded(hasFinishedInitialLoad: Bool, noteIDs: [String]) {
+    private func bootstrapIfNeeded(
+        hasFinishedInitialLoad: Bool,
+        noteIDs: [String],
+        localRecoveryIssue: StickyNotesLocalRecoveryIssue?
+    ) {
         guard hasFinishedInitialLoad, !hasPresentedInitialNotes else { return }
+        guard localRecoveryIssue == nil else { return }
         hasPresentedInitialNotes = true
 
         if noteIDs.isEmpty {
@@ -67,7 +87,51 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
         }
     }
 
+    private func syncRecoveryWindow(with issue: StickyNotesLocalRecoveryIssue?) {
+        guard let issue else {
+            if let recoveryWindow {
+                recoveryWindow.close()
+                self.recoveryWindow = nil
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.bootstrapIfNeeded(
+                    hasFinishedInitialLoad: self.store.hasFinishedInitialLoad,
+                    noteIDs: self.store.noteIDs,
+                    localRecoveryIssue: self.store.localRecoveryIssue
+                )
+            }
+            return
+        }
+
+        let recoveryView = StickyNotesLocalRecoveryView(issue: issue) { [store] in
+            Task { await store.startFreshAfterLocalSnapshotFailure() }
+        }
+
+        if let recoveryWindow {
+            recoveryWindow.contentViewController = NSHostingController(rootView: recoveryView)
+            recoveryWindow.makeKeyAndOrderFront(nil)
+        } else {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 300),
+                styleMask: [.titled, .miniaturizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.center()
+            window.title = "iStickies Recovery"
+            window.contentViewController = NSHostingController(rootView: recoveryView)
+            window.isReleasedWhenClosed = false
+            window.identifier = NSUserInterfaceItemIdentifier("StickyNotes.localRecoveryWindow")
+            recoveryWindow = window
+            window.makeKeyAndOrderFront(nil)
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     private func syncWindows(withOpenNoteIDs openNoteIDs: [String]) {
+        guard store.localRecoveryIssue == nil else { return }
         let openNoteIDSet = Set(openNoteIDs)
 
         for noteID in openNoteIDs where windows[noteID] == nil {

@@ -11,6 +11,21 @@ enum StickyNotesSyncState: Equatable {
     case failed(String)
 }
 
+struct StickyNotesLocalRecoveryIssue: Equatable {
+    var title: String
+    var message: String
+
+    static func localSnapshotLoadFailure(_: Error) -> StickyNotesLocalRecoveryIssue {
+        StickyNotesLocalRecoveryIssue(
+            title: "Notes Need Recovery",
+            message: """
+            iStickies could not restore the local notes file. The unreadable file was kept aside \
+            when possible. Start fresh to create a new local notes file.
+            """
+        )
+    }
+}
+
 enum StickyNoteDraftPersistenceResult: Equatable {
     case persisted(primaryContent: String)
     case conflicted(primaryContent: String, conflictCopyID: String)
@@ -50,6 +65,9 @@ final class StickyNotesStore: ObservableObject {
         didSet { publishStatusObservation() }
     }
     @Published private(set) var lastErrorMessage: String? {
+        didSet { publishStatusObservation() }
+    }
+    @Published private(set) var localRecoveryIssue: StickyNotesLocalRecoveryIssue? {
         didSet { publishStatusObservation() }
     }
 
@@ -123,6 +141,7 @@ final class StickyNotesStore: ObservableObject {
             )
         } catch {
             hasLocalLoadFailure = true
+            localRecoveryIssue = .localSnapshotLoadFailure(error)
             syncState = .failed(error.localizedDescription)
             lastErrorMessage = "Failed to restore notes locally: \(error.localizedDescription)"
             StickyNotesLog.persistence.error(
@@ -162,6 +181,28 @@ final class StickyNotesStore: ObservableObject {
 
     func clearLastErrorMessage() {
         lastErrorMessage = nil
+    }
+
+    func startFreshAfterLocalSnapshotFailure() async {
+        guard hasLocalLoadFailure else { return }
+
+        scheduledSyncTask?.cancel()
+        scheduledPersistenceTask?.cancel()
+        scheduledSyncTask = nil
+        scheduledPersistenceTask = nil
+
+        hasLocalLoadFailure = false
+        localRecoveryIssue = nil
+        lastErrorMessage = nil
+        syncState = .idle
+        lastSuccessfulCloudSync = nil
+        pendingDeletionIDs.removeAll()
+        cachedCloudPersistedState = StickyNotesCloudPersistedState()
+
+        await cloudService.restore(persistedState: cachedCloudPersistedState)
+        replaceStoredNotes(with: [], sort: false)
+        persistSnapshot()
+        StickyNotesLog.persistence.info("Started fresh local snapshot after recovery action")
     }
 
     @discardableResult
@@ -545,7 +586,8 @@ final class StickyNotesStore: ObservableObject {
             syncState: syncState,
             lastSuccessfulCloudSync: lastSuccessfulCloudSync,
             hasFinishedInitialLoad: hasFinishedInitialLoad,
-            lastErrorMessage: lastErrorMessage
+            lastErrorMessage: lastErrorMessage,
+            localRecoveryIssue: localRecoveryIssue
         )
     }
 

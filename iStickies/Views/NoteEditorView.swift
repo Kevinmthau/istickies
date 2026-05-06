@@ -219,11 +219,31 @@ struct NoteEditorView: View {
     @ViewBuilder
     var body: some View {
         if let store {
+#if os(macOS)
             NoteEditorContent(
                 noteID: noteID,
                 noteObservation: store.noteObservation(withID: noteID),
                 autoFocusOnAppear: autoFocusOnAppear
             )
+            .overlay(alignment: .bottom) {
+                StickyNotesCloudIssueBanner(
+                    statusObservation: store.syncStatusObservation(),
+                    retry: {
+                        store.clearLastErrorMessage()
+                        Task { await store.syncNow() }
+                    },
+                    dismiss: {
+                        store.clearLastErrorMessage()
+                    }
+                )
+            }
+#else
+            NoteEditorContent(
+                noteID: noteID,
+                noteObservation: store.noteObservation(withID: noteID),
+                autoFocusOnAppear: autoFocusOnAppear
+            )
+#endif
         } else {
             ContentUnavailableView("Notes Unavailable", systemImage: "note.text")
         }
@@ -332,6 +352,7 @@ private struct MacStickyTextView: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.textContainerInset = NSSize(width: 0, height: Self.minimumVerticalInset)
         textView.string = text
+        textView.setAccessibilityIdentifier("StickyNotes.noteEditor")
 
         if let textContainer = textView.textContainer {
             textContainer.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
@@ -515,6 +536,7 @@ private struct IOSStickyTextView: UIViewRepresentable {
         textView.smartQuotesType = .no
         textView.autocapitalizationType = .sentences
         textView.autocorrectionType = .yes
+        textView.accessibilityIdentifier = "StickyNotes.noteEditor"
         textView.textContainer.lineFragmentPadding = 0
         textView.updateStickyTextInsets()
         return textView
