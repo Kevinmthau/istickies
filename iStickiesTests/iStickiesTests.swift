@@ -2461,6 +2461,23 @@ struct iStickiesTests {
         #expect(framesRespectGap(tiledFrames, gap: gap))
     }
 
+    @Test func stickyWindowGridLayoutFallsBackToNonOverlappingLayoutWhenGapCannotFit() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 100, height: 200)
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: Array(repeating: NSRect(x: 0, y: 0, width: 100, height: 100), count: 2),
+            in: visibleFrame,
+            gap: 16
+        )
+
+        #expect(tiledFrames.allSatisfy { frame in
+            frame.minX >= visibleFrame.minX
+                && frame.maxX <= visibleFrame.maxX
+                && frame.minY >= visibleFrame.minY
+                && frame.maxY <= visibleFrame.maxY
+        })
+        #expect(framesDoNotOverlap(tiledFrames))
+    }
+
     private func framesDoNotOverlap(_ frames: [NSRect]) -> Bool {
         for firstIndex in frames.indices {
             for secondIndex in frames.index(after: firstIndex)..<frames.endIndex {

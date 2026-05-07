@@ -522,23 +522,27 @@ enum StickyNoteWindowGridLayout {
             candidateColumnCounts += stride(from: preferredColumnCount - 1, through: 1, by: -1)
         }
 
-        if let fittingColumnCount = candidateColumnCounts.first(where: {
-            framesFit(
-                tiledFrames(
-                    for: currentFrames,
-                    in: visibleFrame,
-                    cellWidth: cellWidth,
-                    cellHeight: cellHeight,
-                    columnCount: $0
-                ),
+        var fallbackColumnCount: Int?
+        for candidateColumnCount in candidateColumnCounts {
+            let candidateFrames = tiledFrames(
+                for: currentFrames,
                 in: visibleFrame,
-                gap: gap
+                cellWidth: cellWidth,
+                cellHeight: cellHeight,
+                columnCount: candidateColumnCount
             )
-        }) {
-            return fittingColumnCount
+
+            if framesFit(candidateFrames, in: visibleFrame, gap: gap) {
+                return candidateColumnCount
+            }
+
+            if fallbackColumnCount == nil,
+               framesFit(candidateFrames, in: visibleFrame, gap: 0) {
+                fallbackColumnCount = candidateColumnCount
+            }
         }
 
-        return preferredColumnCount
+        return fallbackColumnCount ?? preferredColumnCount
     }
 
     private static func framesFit(_ frames: [NSRect], in visibleFrame: NSRect, gap: CGFloat) -> Bool {
