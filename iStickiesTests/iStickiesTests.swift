@@ -2478,6 +2478,22 @@ struct iStickiesTests {
         #expect(framesDoNotOverlap(tiledFrames))
     }
 
+    @Test func stickyWindowGridLayoutUsesGaplessCellSizeForFallbackRows() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 100, height: 300)
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: Array(repeating: NSRect(x: 0, y: 0, width: 100, height: 100), count: 3),
+            in: visibleFrame,
+            gap: 16
+        )
+
+        #expect(tiledFrames.map(\.origin) == [
+            CGPoint(x: 0, y: 200),
+            CGPoint(x: 0, y: 100),
+            CGPoint(x: 0, y: 0),
+        ])
+        #expect(framesDoNotOverlap(tiledFrames))
+    }
+
     private func framesDoNotOverlap(_ frames: [NSRect]) -> Bool {
         for firstIndex in frames.indices {
             for secondIndex in frames.index(after: firstIndex)..<frames.endIndex {

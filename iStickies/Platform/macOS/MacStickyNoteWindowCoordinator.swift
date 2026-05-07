@@ -454,7 +454,7 @@ enum StickyNoteWindowGridLayout {
         let maximumHeight = currentFrames.map(\.height).max() ?? 0
         let cellWidth = maximumWidth + gap
         let cellHeight = maximumHeight + gap
-        let columnCount = columnCount(
+        let layout = gridLayout(
             for: currentFrames,
             visibleFrame: visibleFrame,
             cellWidth: cellWidth,
@@ -465,9 +465,9 @@ enum StickyNoteWindowGridLayout {
         return tiledFrames(
             for: currentFrames,
             in: visibleFrame,
-            cellWidth: cellWidth,
-            cellHeight: cellHeight,
-            columnCount: columnCount
+            cellWidth: layout.cellWidth,
+            cellHeight: layout.cellHeight,
+            columnCount: layout.columnCount
         )
     }
 
@@ -508,13 +508,19 @@ enum StickyNoteWindowGridLayout {
         return min(max(value, minimum), maximum)
     }
 
-    private static func columnCount(
+    private struct GridLayout {
+        let columnCount: Int
+        let cellWidth: CGFloat
+        let cellHeight: CGFloat
+    }
+
+    private static func gridLayout(
         for currentFrames: [NSRect],
         visibleFrame: NSRect,
         cellWidth: CGFloat,
         cellHeight: CGFloat,
         gap: CGFloat
-    ) -> Int {
+    ) -> GridLayout {
         let itemCount = currentFrames.count
         let preferredColumnCount = max(1, Int(ceil(sqrt(Double(itemCount)))))
         var candidateColumnCounts = Array(preferredColumnCount...itemCount)
@@ -522,7 +528,9 @@ enum StickyNoteWindowGridLayout {
             candidateColumnCounts += stride(from: preferredColumnCount - 1, through: 1, by: -1)
         }
 
-        var fallbackColumnCount: Int?
+        var fallbackLayout: GridLayout?
+        let fallbackCellWidth = currentFrames.map(\.width).max() ?? 0
+        let fallbackCellHeight = currentFrames.map(\.height).max() ?? 0
         for candidateColumnCount in candidateColumnCounts {
             let candidateFrames = tiledFrames(
                 for: currentFrames,
@@ -533,16 +541,35 @@ enum StickyNoteWindowGridLayout {
             )
 
             if framesFit(candidateFrames, in: visibleFrame, gap: gap) {
-                return candidateColumnCount
+                return GridLayout(
+                    columnCount: candidateColumnCount,
+                    cellWidth: cellWidth,
+                    cellHeight: cellHeight
+                )
             }
 
-            if fallbackColumnCount == nil,
-               framesFit(candidateFrames, in: visibleFrame, gap: 0) {
-                fallbackColumnCount = candidateColumnCount
+            let fallbackFrames = tiledFrames(
+                for: currentFrames,
+                in: visibleFrame,
+                cellWidth: fallbackCellWidth,
+                cellHeight: fallbackCellHeight,
+                columnCount: candidateColumnCount
+            )
+            if fallbackLayout == nil,
+               framesFit(fallbackFrames, in: visibleFrame, gap: 0) {
+                fallbackLayout = GridLayout(
+                    columnCount: candidateColumnCount,
+                    cellWidth: fallbackCellWidth,
+                    cellHeight: fallbackCellHeight
+                )
             }
         }
 
-        return fallbackColumnCount ?? preferredColumnCount
+        return fallbackLayout ?? GridLayout(
+            columnCount: preferredColumnCount,
+            cellWidth: cellWidth,
+            cellHeight: cellHeight
+        )
     }
 
     private static func framesFit(_ frames: [NSRect], in visibleFrame: NSRect, gap: CGFloat) -> Bool {
