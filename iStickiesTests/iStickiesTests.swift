@@ -2414,6 +2414,28 @@ struct iStickiesTests {
         #expect(framesDoNotOverlap(tiledFrames))
     }
 
+    @Test func stickyWindowGridLayoutUsesActualWidthsWhenSelectingColumns() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1_440, height: 600)
+        let currentFrames = [
+            NSRect(x: 0, y: 0, width: 1_000, height: 280),
+            NSRect(x: 0, y: 0, width: 220, height: 280),
+            NSRect(x: 0, y: 0, width: 220, height: 280),
+        ]
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: currentFrames,
+            in: visibleFrame,
+            gap: 16
+        )
+
+        #expect(tiledFrames.allSatisfy { frame in
+            frame.minX >= visibleFrame.minX
+                && frame.maxX <= visibleFrame.maxX
+                && frame.minY >= visibleFrame.minY
+                && frame.maxY <= visibleFrame.maxY
+        })
+        #expect(framesDoNotOverlap(tiledFrames))
+    }
+
     private func framesDoNotOverlap(_ frames: [NSRect]) -> Bool {
         for firstIndex in frames.indices {
             for secondIndex in frames.index(after: firstIndex)..<frames.endIndex {

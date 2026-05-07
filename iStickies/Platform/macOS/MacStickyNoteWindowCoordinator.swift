@@ -455,14 +455,29 @@ enum StickyNoteWindowGridLayout {
         let cellWidth = maximumWidth + gap
         let cellHeight = maximumHeight + gap
         let columnCount = columnCount(
-            itemCount: currentFrames.count,
+            for: currentFrames,
             visibleFrame: visibleFrame,
-            maximumWidth: maximumWidth,
-            maximumHeight: maximumHeight,
-            gap: gap
+            cellWidth: cellWidth,
+            cellHeight: cellHeight
         )
 
-        return currentFrames.enumerated().map { index, frame in
+        return tiledFrames(
+            for: currentFrames,
+            in: visibleFrame,
+            cellWidth: cellWidth,
+            cellHeight: cellHeight,
+            columnCount: columnCount
+        )
+    }
+
+    private static func tiledFrames(
+        for currentFrames: [NSRect],
+        in visibleFrame: NSRect,
+        cellWidth: CGFloat,
+        cellHeight: CGFloat,
+        columnCount: Int
+    ) -> [NSRect] {
+        currentFrames.enumerated().map { index, frame in
             let column = index % columnCount
             let row = index / columnCount
             let proposedX = visibleFrame.minX + CGFloat(column) * cellWidth
@@ -493,52 +508,55 @@ enum StickyNoteWindowGridLayout {
     }
 
     private static func columnCount(
-        itemCount: Int,
+        for currentFrames: [NSRect],
         visibleFrame: NSRect,
-        maximumWidth: CGFloat,
-        maximumHeight: CGFloat,
-        gap: CGFloat
+        cellWidth: CGFloat,
+        cellHeight: CGFloat
     ) -> Int {
+        let itemCount = currentFrames.count
         let preferredColumnCount = max(1, Int(ceil(sqrt(Double(itemCount)))))
-        let maximumColumnCount = min(
-            itemCount,
-            slotCount(availableLength: visibleFrame.width, itemLength: maximumWidth, gap: gap)
-        )
-        let maximumRowCount = slotCount(
-            availableLength: visibleFrame.height,
-            itemLength: maximumHeight,
-            gap: gap
-        )
-
-        let constrainedPreferredColumnCount = min(preferredColumnCount, maximumColumnCount)
-        if rowCount(itemCount: itemCount, columnCount: constrainedPreferredColumnCount) <= maximumRowCount {
-            return constrainedPreferredColumnCount
+        var candidateColumnCounts = Array(preferredColumnCount...itemCount)
+        if preferredColumnCount > 1 {
+            candidateColumnCounts += stride(from: preferredColumnCount - 1, through: 1, by: -1)
         }
 
-        if let fittingColumnCount = (constrainedPreferredColumnCount...maximumColumnCount).first(where: {
-            rowCount(itemCount: itemCount, columnCount: $0) <= maximumRowCount
+        if let fittingColumnCount = candidateColumnCounts.first(where: {
+            framesFit(
+                tiledFrames(
+                    for: currentFrames,
+                    in: visibleFrame,
+                    cellWidth: cellWidth,
+                    cellHeight: cellHeight,
+                    columnCount: $0
+                ),
+                in: visibleFrame
+            )
         }) {
             return fittingColumnCount
         }
 
-        return maximumColumnCount
+        return preferredColumnCount
     }
 
-    private static func slotCount(
-        availableLength: CGFloat,
-        itemLength: CGFloat,
-        gap: CGFloat
-    ) -> Int {
-        guard availableLength > 0, itemLength > 0 else { return 1 }
-
-        let slotLength = itemLength + gap
-        guard slotLength > 0 else { return 1 }
-
-        return max(1, Int(floor((availableLength + gap) / slotLength)))
+    private static func framesFit(_ frames: [NSRect], in visibleFrame: NSRect) -> Bool {
+        frames.allSatisfy { frame in
+            frame.minX >= visibleFrame.minX
+                && frame.maxX <= visibleFrame.maxX
+                && frame.minY >= visibleFrame.minY
+                && frame.maxY <= visibleFrame.maxY
+        } && framesDoNotOverlap(frames)
     }
 
-    private static func rowCount(itemCount: Int, columnCount: Int) -> Int {
-        Int(ceil(Double(itemCount) / Double(columnCount)))
+    private static func framesDoNotOverlap(_ frames: [NSRect]) -> Bool {
+        for firstIndex in frames.indices {
+            for secondIndex in frames.index(after: firstIndex)..<frames.endIndex {
+                if frames[firstIndex].intersects(frames[secondIndex]) {
+                    return false
+                }
+            }
+        }
+
+        return true
     }
 }
 
