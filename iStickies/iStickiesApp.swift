@@ -47,10 +47,18 @@ final class StickyNotesAppDelegate: NSObject, NSApplicationDelegate {
     static weak var store: StickyNotesStore?
 
     private var isWaitingForTerminationReply = false
+    private var syncScheduler: MacStickyNotesSyncScheduler?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard StickyNotesRuntime.isRunningHostedUnitTests else { return }
-        NSApp.setActivationPolicy(.prohibited)
+        if StickyNotesRuntime.isRunningHostedUnitTests {
+            NSApp.setActivationPolicy(.prohibited)
+            return
+        }
+
+        guard let store = Self.store else { return }
+        let syncScheduler = MacStickyNotesSyncScheduler(store: store)
+        self.syncScheduler = syncScheduler
+        syncScheduler.start()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -58,6 +66,8 @@ final class StickyNotesAppDelegate: NSObject, NSApplicationDelegate {
         guard let store = Self.store else { return .terminateNow }
 
         isWaitingForTerminationReply = true
+        syncScheduler?.stop()
+        syncScheduler = nil
         NotificationCenter.default.post(name: .stickyNotesWillTerminate, object: nil)
 
         Task { @MainActor in

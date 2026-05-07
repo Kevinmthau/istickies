@@ -1460,6 +1460,56 @@ struct iStickiesTests {
         #expect(Set(reloadedSnapshot.notes.map(\.id)) == Set(noteIDs))
     }
 
+    @Test func automaticSyncFlushesPendingPersistenceBeforeFetchingRemoteSnapshot() async throws {
+        let fileURL = temporaryStoreURL()
+        let fileStore = StickyNotesFileStore(fileURL: fileURL)
+        let cloudService = SnapshotReadingCloudService(fileURL: fileURL)
+        let store = StickyNotesStore(fileStore: fileStore, cloudService: cloudService, autoLoad: false)
+
+        await store.load()
+        let noteID = store.createNote()
+        store.updateContent(id: noteID, content: "Edited before automatic sync")
+
+        await store.syncAutomatically(reason: .appActivation)
+
+        let observedContents = await cloudService.persistedContentsAtFetch()
+        #expect(observedContents.last?.contains("Edited before automatic sync") == true)
+    }
+
+    @Test func automaticSyncDoesNotFetchBeforeLocalLoadFinishes() async throws {
+        let cloudService = MockCloudService()
+        let store = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: temporaryStoreURL()),
+            cloudService: cloudService,
+            autoLoad: false
+        )
+
+        await store.syncAutomatically(reason: .appActivation)
+
+        #expect(await cloudService.fetchCount() == 0)
+    }
+
+    @Test func automaticSyncDoesNotFetchAfterUnrecoverableLocalSnapshotFailure() async throws {
+        let fileURL = temporaryStoreURL()
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("not json".utf8).write(to: fileURL, options: .atomic)
+
+        let cloudService = MockCloudService()
+        let store = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: fileURL),
+            cloudService: cloudService,
+            autoLoad: false
+        )
+
+        await store.load()
+        await store.syncAutomatically(reason: .periodicPoll)
+
+        #expect(await cloudService.fetchCount() == 0)
+    }
+
     @Test func outOfOrderSnapshotWritesDoNotResurrectDeletedNotesOnReload() async throws {
         let fileURL = temporaryStoreURL()
         let fileStore = StickyNotesFileStore(fileURL: fileURL)
@@ -1498,7 +1548,7 @@ struct iStickiesTests {
         let firstNoteID = store.createNote()
         let secondNoteID = store.createNote()
 
-        try await Task.sleep(for: .milliseconds(180))
+        await store.flushPendingPersistence()
 
         let snapshot = try await fileStore.load()
         #expect(Set(snapshot.notes.map(\.id)) == Set([firstNoteID, secondNoteID]))
@@ -2112,6 +2162,68 @@ struct iStickiesTests {
     }
 
 #if os(macOS)
+    @Test func automaticSyncSchedulerRunsImmediateSyncAndCoalescesThrottledRequests() async {
+        var now = Date(timeIntervalSince1970: 0)
+        var syncedReasons: [StickyNotesAutomaticSyncReason] = []
+        var scheduledDelays: [TimeInterval] = []
+        var scheduledOperations: [@MainActor () async -> Void] = []
+
+        let scheduler = StickyNotesAutomaticSyncScheduler(
+            minimumSyncInterval: 10,
+            now: { now },
+            scheduleDelayedOperation: { delay, operation in
+                scheduledDelays.append(delay)
+                scheduledOperations.append(operation)
+                return StickyNotesAutomaticSyncScheduledTask(cancel: {})
+            },
+            syncOperation: { reason in
+                syncedReasons.append(reason)
+            }
+        )
+
+        await scheduler.requestSync(reason: .appActivation)
+        now = Date(timeIntervalSince1970: 1)
+        await scheduler.requestSync(reason: .systemWake)
+        now = Date(timeIntervalSince1970: 2)
+        await scheduler.requestSync(reason: .networkRestored)
+
+        #expect(syncedReasons == [.appActivation])
+        #expect(scheduledDelays == [9])
+        #expect(scheduledOperations.count == 1)
+
+        now = Date(timeIntervalSince1970: 10)
+        await scheduledOperations[0]()
+
+        #expect(syncedReasons == [.appActivation, .networkRestored])
+    }
+
+    @Test func automaticSyncSchedulerStopCancelsDeferredSync() async {
+        var now = Date(timeIntervalSince1970: 0)
+        var didCancel = false
+        var syncedReasons: [StickyNotesAutomaticSyncReason] = []
+
+        let scheduler = StickyNotesAutomaticSyncScheduler(
+            minimumSyncInterval: 10,
+            now: { now },
+            scheduleDelayedOperation: { _, _ in
+                StickyNotesAutomaticSyncScheduledTask(cancel: {
+                    didCancel = true
+                })
+            },
+            syncOperation: { reason in
+                syncedReasons.append(reason)
+            }
+        )
+
+        await scheduler.requestSync(reason: .appActivation)
+        now = Date(timeIntervalSince1970: 1)
+        await scheduler.requestSync(reason: .periodicPoll)
+        scheduler.stop()
+
+        #expect(syncedReasons == [.appActivation])
+        #expect(didCancel)
+    }
+
     @Test func recentLocalFrameDoesNotGetReappliedToDraggingWindow() {
         let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
         let shouldApply = StickyNoteWindowFrameSync.shouldApplyModelFrame(
@@ -2194,6 +2306,7 @@ private actor MockCloudService: StickyNotesCloudSyncing {
     private let fetchDelay: Duration
     private let stateSerializationDelays: [Duration]
     private let currentStateSerializationData: Data?
+    private var fetchCallCount = 0
     private var stateSerializationCallCount = 0
     private var restoredPersistedState = StickyNotesCloudPersistedState()
 
@@ -2212,6 +2325,7 @@ private actor MockCloudService: StickyNotesCloudSyncing {
     }
 
     func fetchAllNotes() async throws -> CloudRemoteSnapshot {
+        fetchCallCount += 1
         try? await Task.sleep(for: fetchDelay)
         return CloudRemoteSnapshot(notes: Array(remoteNotesByID.values), completeness: remoteSnapshotCompleteness)
     }
@@ -2255,6 +2369,57 @@ private actor MockCloudService: StickyNotesCloudSyncing {
 
     func snapshot() -> [StickyNote] {
         Array(remoteNotesByID.values)
+    }
+
+    func fetchCount() -> Int {
+        fetchCallCount
+    }
+}
+
+private actor SnapshotReadingCloudService: StickyNotesCloudSyncing {
+    private let fileStore: StickyNotesFileStore
+    private var observedContentsAtFetch: [[String]] = []
+    private var remoteNotesByID: [String: StickyNote] = [:]
+
+    init(fileURL: URL) {
+        fileStore = StickyNotesFileStore(fileURL: fileURL)
+    }
+
+    func restore(persistedState: StickyNotesCloudPersistedState) async {
+        remoteNotesByID = Dictionary(uniqueKeysWithValues: persistedState.remoteNotes.map {
+            ($0.id, $0.markedClean())
+        })
+    }
+
+    func currentPersistedState() async -> StickyNotesCloudPersistedState {
+        StickyNotesCloudPersistedState(remoteNotes: Array(remoteNotesByID.values))
+    }
+
+    func fetchAllNotes() async throws -> CloudRemoteSnapshot {
+        let snapshot = try await fileStore.load()
+        observedContentsAtFetch.append(snapshot.notes.map(\.content))
+        return CloudRemoteSnapshot.complete(notes: Array(remoteNotesByID.values))
+    }
+
+    func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {
+        var result = CloudSyncBatchResult()
+
+        for note in saves {
+            let cleanNote = note.markedClean()
+            remoteNotesByID[note.id] = cleanNote
+            result.savedNotes.append(cleanNote)
+        }
+
+        for id in deletions {
+            remoteNotesByID.removeValue(forKey: id)
+            result.deletedNoteIDs.append(id)
+        }
+
+        return result
+    }
+
+    func persistedContentsAtFetch() -> [[String]] {
+        observedContentsAtFetch
     }
 }
 

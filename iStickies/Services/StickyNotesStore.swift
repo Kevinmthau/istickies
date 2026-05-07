@@ -11,6 +11,14 @@ enum StickyNotesSyncState: Equatable {
     case failed(String)
 }
 
+enum StickyNotesAutomaticSyncReason: String, Sendable {
+    case launch
+    case appActivation
+    case systemWake
+    case networkRestored
+    case periodicPoll
+}
+
 struct StickyNotesLocalRecoveryIssue: Equatable {
     var title: String
     var message: String
@@ -108,7 +116,7 @@ final class StickyNotesStore: ObservableObject {
 
         Task {
             await load()
-            await syncNow()
+            await syncAutomatically(reason: .launch)
         }
     }
 
@@ -345,6 +353,33 @@ final class StickyNotesStore: ObservableObject {
             pendingDeletionIDs.insert(id)
             return true
         }
+    }
+
+    func syncAutomatically(reason: StickyNotesAutomaticSyncReason) async {
+        guard hasLoaded else {
+            StickyNotesLog.sync.debug(
+                "Automatic sync skipped before local load reason: \(reason.rawValue, privacy: .public)"
+            )
+            return
+        }
+        guard !isSynchronizing else {
+            StickyNotesLog.sync.debug(
+                "Automatic sync skipped because sync is already running reason: \(reason.rawValue, privacy: .public)"
+            )
+            return
+        }
+        guard !hasLocalLoadFailure else {
+            StickyNotesLog.sync.warning(
+                "Automatic sync skipped after local load failure reason: \(reason.rawValue, privacy: .public)"
+            )
+            return
+        }
+
+        StickyNotesLog.sync.info(
+            "Automatic sync requested reason: \(reason.rawValue, privacy: .public)"
+        )
+        await flushPendingPersistence()
+        await syncNow()
     }
 
     func syncNow() async {
