@@ -30,6 +30,7 @@ final class StickyNotesAutomaticSyncScheduler {
     private let syncOperation: SyncOperation
 
     private var lastSyncDate: Date?
+    private var isSyncInFlight = false
     private var pendingReason: StickyNotesAutomaticSyncReason?
     private var pendingSyncTask: StickyNotesAutomaticSyncScheduledTask?
 
@@ -63,6 +64,11 @@ final class StickyNotesAutomaticSyncScheduler {
             }
         }
 
+        if isSyncInFlight {
+            pendingReason = reason
+            return
+        }
+
         pendingSyncTask?.cancel()
         pendingSyncTask = nil
         pendingReason = nil
@@ -77,6 +83,8 @@ final class StickyNotesAutomaticSyncScheduler {
 
     private func runDeferredSync() async {
         pendingSyncTask = nil
+        guard !isSyncInFlight else { return }
+
         let reason = pendingReason ?? .periodicPoll
         pendingReason = nil
         await runSync(reason: reason, at: now())
@@ -84,7 +92,33 @@ final class StickyNotesAutomaticSyncScheduler {
 
     private func runSync(reason: StickyNotesAutomaticSyncReason, at date: Date) async {
         lastSyncDate = date
+        isSyncInFlight = true
         await syncOperation(reason)
+        isSyncInFlight = false
+        await drainPendingSyncIfNeeded()
+    }
+
+    private func drainPendingSyncIfNeeded() async {
+        guard let reason = pendingReason else { return }
+
+        let currentDate = now()
+        if let lastSyncDate {
+            let elapsed = currentDate.timeIntervalSince(lastSyncDate)
+            if elapsed < minimumSyncInterval {
+                guard pendingSyncTask == nil else { return }
+
+                let delay = max(0, minimumSyncInterval - elapsed)
+                pendingSyncTask = scheduleDelayedOperation(delay) { [weak self] in
+                    await self?.runDeferredSync()
+                }
+                return
+            }
+        }
+
+        pendingSyncTask?.cancel()
+        pendingSyncTask = nil
+        pendingReason = nil
+        await runSync(reason: reason, at: currentDate)
     }
 
     private static func scheduleDelayedOperation(

@@ -2224,6 +2224,32 @@ struct iStickiesTests {
         #expect(didCancel)
     }
 
+    @Test func automaticSyncSchedulerDrainsRequestReceivedDuringInFlightSync() async {
+        var now = Date(timeIntervalSince1970: 0)
+        var syncedReasons: [StickyNotesAutomaticSyncReason] = []
+        var syncCountObservedDuringFirstSync = 0
+        var scheduler: StickyNotesAutomaticSyncScheduler?
+
+        scheduler = StickyNotesAutomaticSyncScheduler(
+            minimumSyncInterval: 10,
+            now: { now },
+            syncOperation: { reason in
+                syncedReasons.append(reason)
+
+                if reason == .appActivation {
+                    now = Date(timeIntervalSince1970: 11)
+                    await scheduler?.requestSync(reason: .networkRestored)
+                    syncCountObservedDuringFirstSync = syncedReasons.count
+                }
+            }
+        )
+
+        await scheduler?.requestSync(reason: .appActivation)
+
+        #expect(syncCountObservedDuringFirstSync == 1)
+        #expect(syncedReasons == [.appActivation, .networkRestored])
+    }
+
     @Test func recentLocalFrameDoesNotGetReappliedToDraggingWindow() {
         let currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
         let shouldApply = StickyNoteWindowFrameSync.shouldApplyModelFrame(
