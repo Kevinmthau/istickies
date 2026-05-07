@@ -2396,6 +2396,35 @@ struct iStickiesTests {
                 && frame.maxY <= visibleFrame.maxY
         })
     }
+
+    @Test func stickyWindowGridLayoutUsesAvailableScreenToAvoidOverlaps() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1_440, height: 700)
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: Array(repeating: NSRect(x: 0, y: 0, width: 280, height: 280), count: 8),
+            in: visibleFrame,
+            gap: 16
+        )
+
+        #expect(tiledFrames.allSatisfy { frame in
+            frame.minX >= visibleFrame.minX
+                && frame.maxX <= visibleFrame.maxX
+                && frame.minY >= visibleFrame.minY
+                && frame.maxY <= visibleFrame.maxY
+        })
+        #expect(framesDoNotOverlap(tiledFrames))
+    }
+
+    private func framesDoNotOverlap(_ frames: [NSRect]) -> Bool {
+        for firstIndex in frames.indices {
+            for secondIndex in frames.index(after: firstIndex)..<frames.endIndex {
+                if frames[firstIndex].intersects(frames[secondIndex]) {
+                    return false
+                }
+            }
+        }
+
+        return true
+    }
 #endif
 }
 

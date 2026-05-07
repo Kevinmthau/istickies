@@ -450,11 +450,17 @@ enum StickyNoteWindowGridLayout {
         guard !currentFrames.isEmpty else { return [] }
         guard visibleFrame.width > 0, visibleFrame.height > 0 else { return currentFrames }
 
-        let columnCount = max(1, Int(ceil(sqrt(Double(currentFrames.count)))))
         let maximumWidth = currentFrames.map(\.width).max() ?? 0
         let maximumHeight = currentFrames.map(\.height).max() ?? 0
         let cellWidth = maximumWidth + gap
         let cellHeight = maximumHeight + gap
+        let columnCount = columnCount(
+            itemCount: currentFrames.count,
+            visibleFrame: visibleFrame,
+            maximumWidth: maximumWidth,
+            maximumHeight: maximumHeight,
+            gap: gap
+        )
 
         return currentFrames.enumerated().map { index, frame in
             let column = index % columnCount
@@ -484,6 +490,55 @@ enum StickyNoteWindowGridLayout {
     ) -> CGFloat {
         guard maximum >= minimum else { return minimum }
         return min(max(value, minimum), maximum)
+    }
+
+    private static func columnCount(
+        itemCount: Int,
+        visibleFrame: NSRect,
+        maximumWidth: CGFloat,
+        maximumHeight: CGFloat,
+        gap: CGFloat
+    ) -> Int {
+        let preferredColumnCount = max(1, Int(ceil(sqrt(Double(itemCount)))))
+        let maximumColumnCount = min(
+            itemCount,
+            slotCount(availableLength: visibleFrame.width, itemLength: maximumWidth, gap: gap)
+        )
+        let maximumRowCount = slotCount(
+            availableLength: visibleFrame.height,
+            itemLength: maximumHeight,
+            gap: gap
+        )
+
+        let constrainedPreferredColumnCount = min(preferredColumnCount, maximumColumnCount)
+        if rowCount(itemCount: itemCount, columnCount: constrainedPreferredColumnCount) <= maximumRowCount {
+            return constrainedPreferredColumnCount
+        }
+
+        if let fittingColumnCount = (constrainedPreferredColumnCount...maximumColumnCount).first(where: {
+            rowCount(itemCount: itemCount, columnCount: $0) <= maximumRowCount
+        }) {
+            return fittingColumnCount
+        }
+
+        return maximumColumnCount
+    }
+
+    private static func slotCount(
+        availableLength: CGFloat,
+        itemLength: CGFloat,
+        gap: CGFloat
+    ) -> Int {
+        guard availableLength > 0, itemLength > 0 else { return 1 }
+
+        let slotLength = itemLength + gap
+        guard slotLength > 0 else { return 1 }
+
+        return max(1, Int(floor((availableLength + gap) / slotLength)))
+    }
+
+    private static func rowCount(itemCount: Int, columnCount: Int) -> Int {
+        Int(ceil(Double(itemCount) / Double(columnCount)))
     }
 }
 
