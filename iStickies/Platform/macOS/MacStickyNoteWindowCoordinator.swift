@@ -65,6 +65,27 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
         bringAllWindowsToFront(prioritizing: windowOrder.last ?? store.noteIDs.first)
     }
 
+    func tileOpenNotesInGrid() {
+        guard store.localRecoveryIssue == nil else { return }
+
+        let orderedWindows = orderedWindowsForPresentation()
+        guard !orderedWindows.isEmpty else { return }
+
+        let referenceScreen = (NSApp.keyWindow as? StickyNoteWindow)?.screen
+            ?? orderedWindows.first?.screen
+            ?? NSScreen.main
+        guard let visibleFrame = referenceScreen?.visibleFrame else { return }
+
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: orderedWindows.map(\.frame),
+            in: visibleFrame
+        )
+
+        for (window, frame) in zip(orderedWindows, tiledFrames) {
+            window.applyTiledFrame(frame)
+        }
+    }
+
     func deleteFocusedNote() {
         guard store.localRecoveryIssue == nil else { return }
         guard let stickyWindow = NSApp.keyWindow as? StickyNoteWindow else { return }
@@ -367,6 +388,13 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         }
     }
 
+    func applyTiledFrame(_ frame: NSRect) {
+        let targetFrame = Self.clampedFrame(frame)
+        frameController.reset()
+        frameController.applyModelFrame(targetFrame, force: true)
+        store.updatePreferredFrame(id: noteID, frame: targetFrame.stickyFrame)
+    }
+
     private static func clampedFrame(_ frame: NSRect) -> NSRect {
         NSRect(
             x: frame.origin.x,
@@ -408,6 +436,65 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         isClosingFromCoordinator = false
         isPresentingDeleteConfirmation = false
         isClosingForApplicationTermination = false
+    }
+}
+
+enum StickyNoteWindowGridLayout {
+    static let defaultGap: CGFloat = 16
+
+    static func tiledFrames(
+        for currentFrames: [NSRect],
+        in visibleFrame: NSRect,
+        gap: CGFloat = defaultGap
+    ) -> [NSRect] {
+        guard !currentFrames.isEmpty else { return [] }
+        guard visibleFrame.width > 0, visibleFrame.height > 0 else { return currentFrames }
+
+        let columnCount = max(1, Int(ceil(sqrt(Double(currentFrames.count)))))
+        let maximumWidth = currentFrames.map(\.width).max() ?? 0
+        let maximumHeight = currentFrames.map(\.height).max() ?? 0
+        let cellWidth = maximumWidth + gap
+        let cellHeight = maximumHeight + gap
+
+        return currentFrames.enumerated().map { index, frame in
+            let column = index % columnCount
+            let row = index / columnCount
+            let proposedX = visibleFrame.minX + CGFloat(column) * cellWidth
+            let rowTopY = visibleFrame.maxY - CGFloat(row) * cellHeight
+            let proposedY = rowTopY - frame.height
+            let x = clampedOrigin(
+                proposedX,
+                minimum: visibleFrame.minX,
+                maximum: visibleFrame.maxX - frame.width
+            )
+            let y = clampedOrigin(
+                proposedY,
+                minimum: visibleFrame.minY,
+                maximum: visibleFrame.maxY - frame.height
+            )
+
+            return NSRect(x: x, y: y, width: frame.width, height: frame.height)
+        }
+    }
+
+    private static func clampedOrigin(
+        _ value: CGFloat,
+        minimum: CGFloat,
+        maximum: CGFloat
+    ) -> CGFloat {
+        guard maximum >= minimum else { return minimum }
+        return min(max(value, minimum), maximum)
+    }
+}
+
+private extension NSRect {
+    var stickyFrame: StickyNoteFrame {
+        StickyNoteFrame(
+            x: origin.x,
+            y: origin.y,
+            width: size.width,
+            height: size.height
+        )
     }
 }
 #endif

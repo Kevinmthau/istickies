@@ -96,6 +96,11 @@ private struct StickyNotesCommands: Commands {
             }
             .keyboardShortcut("0", modifiers: [.command, .shift])
 
+            Button("Tile Open Notes") {
+                windowCoordinator.tileOpenNotesInGrid()
+            }
+            .keyboardShortcut("0", modifiers: [.command, .control])
+
             Button("Sync Now") {
                 Task { await store.syncNow() }
             }

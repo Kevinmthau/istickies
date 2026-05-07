@@ -2322,6 +2322,80 @@ struct iStickiesTests {
             ) == nil
         )
     }
+
+    @Test func stickyWindowGridLayoutReturnsNoFramesForNoWindows() {
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: [],
+            in: NSRect(x: 0, y: 0, width: 800, height: 600)
+        )
+
+        #expect(tiledFrames.isEmpty)
+    }
+
+    @Test func stickyWindowGridLayoutKeepsSingleWindowWithinVisibleBounds() throws {
+        let visibleFrame = NSRect(x: 40, y: 60, width: 400, height: 300)
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: [NSRect(x: 900, y: 900, width: 180, height: 120)],
+            in: visibleFrame
+        )
+        let frame = try #require(tiledFrames.first)
+
+        #expect(frame.minX >= visibleFrame.minX)
+        #expect(frame.maxX <= visibleFrame.maxX)
+        #expect(frame.minY >= visibleFrame.minY)
+        #expect(frame.maxY <= visibleFrame.maxY)
+        #expect(frame.size == CGSize(width: 180, height: 120))
+    }
+
+    @Test func stickyWindowGridLayoutTilesLeftToRightThenTopToBottom() {
+        let visibleFrame = NSRect(x: 100, y: 50, width: 900, height: 700)
+        let currentFrames = Array(
+            repeating: NSRect(x: 0, y: 0, width: 200, height: 100),
+            count: 4
+        )
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: currentFrames,
+            in: visibleFrame,
+            gap: 16
+        )
+
+        #expect(tiledFrames.map(\.origin) == [
+            CGPoint(x: 100, y: 650),
+            CGPoint(x: 316, y: 650),
+            CGPoint(x: 100, y: 534),
+            CGPoint(x: 316, y: 534),
+        ])
+    }
+
+    @Test func stickyWindowGridLayoutPreservesEachWindowSize() {
+        let currentFrames = [
+            NSRect(x: 0, y: 0, width: 180, height: 140),
+            NSRect(x: 0, y: 0, width: 260, height: 220),
+            NSRect(x: 0, y: 0, width: 210, height: 160),
+        ]
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: currentFrames,
+            in: NSRect(x: 0, y: 0, width: 900, height: 700)
+        )
+
+        #expect(tiledFrames.map(\.size) == currentFrames.map(\.size))
+    }
+
+    @Test func stickyWindowGridLayoutClampsOriginsIntoVisibleBounds() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 500, height: 500)
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: Array(repeating: NSRect(x: 0, y: 0, width: 280, height: 280), count: 4),
+            in: visibleFrame,
+            gap: 16
+        )
+
+        #expect(tiledFrames.allSatisfy { frame in
+            frame.minX >= visibleFrame.minX
+                && frame.maxX <= visibleFrame.maxX
+                && frame.minY >= visibleFrame.minY
+                && frame.maxY <= visibleFrame.maxY
+        })
+    }
 #endif
 }
 
