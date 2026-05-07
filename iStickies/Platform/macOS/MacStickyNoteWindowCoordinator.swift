@@ -458,7 +458,8 @@ enum StickyNoteWindowGridLayout {
             for: currentFrames,
             visibleFrame: visibleFrame,
             cellWidth: cellWidth,
-            cellHeight: cellHeight
+            cellHeight: cellHeight,
+            gap: gap
         )
 
         return tiledFrames(
@@ -511,7 +512,8 @@ enum StickyNoteWindowGridLayout {
         for currentFrames: [NSRect],
         visibleFrame: NSRect,
         cellWidth: CGFloat,
-        cellHeight: CGFloat
+        cellHeight: CGFloat,
+        gap: CGFloat
     ) -> Int {
         let itemCount = currentFrames.count
         let preferredColumnCount = max(1, Int(ceil(sqrt(Double(itemCount)))))
@@ -529,7 +531,8 @@ enum StickyNoteWindowGridLayout {
                     cellHeight: cellHeight,
                     columnCount: $0
                 ),
-                in: visibleFrame
+                in: visibleFrame,
+                gap: gap
             )
         }) {
             return fittingColumnCount
@@ -538,19 +541,35 @@ enum StickyNoteWindowGridLayout {
         return preferredColumnCount
     }
 
-    private static func framesFit(_ frames: [NSRect], in visibleFrame: NSRect) -> Bool {
+    private static func framesFit(_ frames: [NSRect], in visibleFrame: NSRect, gap: CGFloat) -> Bool {
         frames.allSatisfy { frame in
             frame.minX >= visibleFrame.minX
                 && frame.maxX <= visibleFrame.maxX
                 && frame.minY >= visibleFrame.minY
                 && frame.maxY <= visibleFrame.maxY
-        } && framesDoNotOverlap(frames)
+        } && framesRespectGap(frames, gap: gap)
     }
 
-    private static func framesDoNotOverlap(_ frames: [NSRect]) -> Bool {
+    private static func framesRespectGap(_ frames: [NSRect], gap: CGFloat) -> Bool {
+        let minimumGap = max(0, gap)
         for firstIndex in frames.indices {
             for secondIndex in frames.index(after: firstIndex)..<frames.endIndex {
-                if frames[firstIndex].intersects(frames[secondIndex]) {
+                if minimumGap == 0, frames[firstIndex].intersects(frames[secondIndex]) {
+                    return false
+                }
+
+                let horizontalGap = max(
+                    frames[secondIndex].minX - frames[firstIndex].maxX,
+                    frames[firstIndex].minX - frames[secondIndex].maxX,
+                    0
+                )
+                let verticalGap = max(
+                    frames[secondIndex].minY - frames[firstIndex].maxY,
+                    frames[firstIndex].minY - frames[secondIndex].maxY,
+                    0
+                )
+
+                if horizontalGap < minimumGap && verticalGap < minimumGap {
                     return false
                 }
             }

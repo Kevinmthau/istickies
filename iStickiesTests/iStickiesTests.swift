@@ -2436,10 +2436,58 @@ struct iStickiesTests {
         #expect(framesDoNotOverlap(tiledFrames))
     }
 
+    @Test func stickyWindowGridLayoutRejectsCandidatesThatViolateGap() {
+        let gap: CGFloat = 16
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let currentFrames = [
+            NSRect(x: 0, y: 0, width: 1_000, height: 280),
+            NSRect(x: 0, y: 0, width: 220, height: 280),
+            NSRect(x: 0, y: 0, width: 200, height: 280),
+            NSRect(x: 0, y: 0, width: 200, height: 280),
+            NSRect(x: 0, y: 0, width: 200, height: 280),
+        ]
+        let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
+            for: currentFrames,
+            in: visibleFrame,
+            gap: gap
+        )
+
+        #expect(tiledFrames.allSatisfy { frame in
+            frame.minX >= visibleFrame.minX
+                && frame.maxX <= visibleFrame.maxX
+                && frame.minY >= visibleFrame.minY
+                && frame.maxY <= visibleFrame.maxY
+        })
+        #expect(framesRespectGap(tiledFrames, gap: gap))
+    }
+
     private func framesDoNotOverlap(_ frames: [NSRect]) -> Bool {
         for firstIndex in frames.indices {
             for secondIndex in frames.index(after: firstIndex)..<frames.endIndex {
                 if frames[firstIndex].intersects(frames[secondIndex]) {
+                    return false
+                }
+            }
+        }
+
+        return true
+    }
+
+    private func framesRespectGap(_ frames: [NSRect], gap: CGFloat) -> Bool {
+        for firstIndex in frames.indices {
+            for secondIndex in frames.index(after: firstIndex)..<frames.endIndex {
+                let horizontalGap = max(
+                    frames[secondIndex].minX - frames[firstIndex].maxX,
+                    frames[firstIndex].minX - frames[secondIndex].maxX,
+                    0
+                )
+                let verticalGap = max(
+                    frames[secondIndex].minY - frames[firstIndex].maxY,
+                    frames[firstIndex].minY - frames[secondIndex].maxY,
+                    0
+                )
+
+                if horizontalGap < gap && verticalGap < gap {
                     return false
                 }
             }
