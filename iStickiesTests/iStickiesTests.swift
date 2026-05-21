@@ -34,6 +34,21 @@ struct iStickiesTests {
         ))
     }
 
+    @Test func keyboardScreenFrameIsConvertedBeforeSceneIntersection() {
+        let sceneFrame = CGRect(x: 0, y: 0, width: 700, height: 600)
+        let screenEndFrame = CGRect(x: 120, y: 640, width: 700, height: 260)
+
+        #expect(!StickyNotesKeyboardFrame.coversScene(
+            endFrame: screenEndFrame,
+            sceneFrame: sceneFrame
+        ))
+        #expect(StickyNotesKeyboardFrame.coversScene(
+            screenEndFrame: screenEndFrame,
+            sceneFrame: sceneFrame,
+            convertScreenFrameToScene: { $0.offsetBy(dx: -120, dy: -160) }
+        ))
+    }
+
     @Test func syncDownloadsRemoteNotes() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let remoteNote = StickyNote(

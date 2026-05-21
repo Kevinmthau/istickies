@@ -24,6 +24,17 @@ enum StickyNotesKeyboardFrame {
 
         return endFrame.intersects(sceneFrame)
     }
+
+    static func coversScene(
+        screenEndFrame: CGRect,
+        sceneFrame: CGRect,
+        convertScreenFrameToScene: (CGRect) -> CGRect
+    ) -> Bool {
+        coversScene(
+            endFrame: convertScreenFrameToScene(screenEndFrame),
+            sceneFrame: sceneFrame
+        )
+    }
 }
 
 struct StickyNoteCardChrome<Content: View>: View {
@@ -317,6 +328,9 @@ private struct MobileNotesSceneContent: View {
     @State private var editingNoteID: String?
     @State private var displayOrderIDs: [String] = []
     @State private var noteToDelete: String?
+#if os(iOS)
+    @StateObject private var sceneWindowReference = StickyNotesSceneWindowReference()
+#endif
 
     private let columns = Array(
         repeating: GridItem(.flexible(), spacing: StickyNoteCardLayout.gridSpacing, alignment: .top),
@@ -399,6 +413,13 @@ private struct MobileNotesSceneContent: View {
                                 }
                                 .scrollDismissesKeyboard(.interactively)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+#if os(iOS)
+                                .background {
+                                    StickyNotesSceneWindowReader(windowReference: sceneWindowReference)
+                                        .frame(width: 0, height: 0)
+                                        .allowsHitTesting(false)
+                                }
+#endif
                                 .onChange(of: editingNoteID) { _, noteID in
                                     guard let noteID else { return }
                                     scrollNoteIntoView(noteID, with: scrollProxy)
@@ -513,8 +534,15 @@ private struct MobileNotesSceneContent: View {
         guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
             return false
         }
+        guard let sceneWindow = sceneWindowReference.window else {
+            return true
+        }
 
-        return StickyNotesKeyboardFrame.coversScene(endFrame: endFrame, sceneFrame: sceneFrame)
+        return StickyNotesKeyboardFrame.coversScene(
+            screenEndFrame: endFrame,
+            sceneFrame: sceneFrame,
+            convertScreenFrameToScene: { sceneWindow.convert($0, from: nil) }
+        )
     }
 #endif
 
@@ -537,6 +565,40 @@ private struct MobileNotesSceneContent: View {
             latestIDs: latestIDs,
             preserveCurrentOrder: editingNoteID != nil
         )
+    }
+}
+#endif
+
+#if os(iOS)
+private final class StickyNotesSceneWindowReference: ObservableObject {
+    weak var window: UIWindow?
+}
+
+private struct StickyNotesSceneWindowReader: UIViewRepresentable {
+    let windowReference: StickyNotesSceneWindowReference
+
+    func makeUIView(context: Context) -> WindowReportingView {
+        let view = WindowReportingView()
+        view.windowReference = windowReference
+        return view
+    }
+
+    func updateUIView(_ view: WindowReportingView, context: Context) {
+        view.windowReference = windowReference
+        view.reportWindow()
+    }
+
+    final class WindowReportingView: UIView {
+        weak var windowReference: StickyNotesSceneWindowReference?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            reportWindow()
+        }
+
+        func reportWindow() {
+            windowReference?.window = window
+        }
     }
 }
 #endif
