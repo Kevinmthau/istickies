@@ -2171,7 +2171,7 @@ struct iStickiesTests {
     @Test func stickyNoteCardLayoutMatchesDashboardGridWidth() {
         let cardWidth = StickyNoteCardLayout.cardWidth(for: 390)
 
-        #expect(cardWidth == 171)
+        #expect(cardWidth == 161)
     }
 
     @Test func stickyNotePaperHitRegionExcludesTransparentCurlCorner() {

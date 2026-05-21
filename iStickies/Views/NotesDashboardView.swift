@@ -4,11 +4,11 @@ import UIKit
 #endif
 
 enum StickyNoteCardLayout {
-    static let gridSpacing: CGFloat = 16
-    static let outerPadding: CGFloat = 16
-    static let contentPadding: CGFloat = 16
-    static let cornerRadius: CGFloat = 2
-    static let height: CGFloat = 180
+    static let gridSpacing: CGFloat = 20
+    static let outerPadding: CGFloat = 24
+    static let contentPadding: CGFloat = 18
+    static let cornerRadius: CGFloat = 12
+    static let height: CGFloat = 172
 
     static func cardWidth(for availableWidth: CGFloat) -> CGFloat {
         let horizontalChrome = (outerPadding * 2) + gridSpacing
@@ -37,7 +37,7 @@ enum StickyNotesKeyboardFrame {
     }
 }
 
-struct StickyNoteCardChrome<Content: View>: View {
+struct StickyNoteCard<Content: View>: View {
     let color: Color
     @ViewBuilder let content: Content
 
@@ -65,16 +65,16 @@ struct StickyNotePaperSurface: View {
         ZStack {
             StickyNotePaperBackground(color: color)
             StickyNotePaperEdgeTone()
-            StickyNoteCornerCurl(color: color)
+            StickyNoteCornerCurl()
         }
         .clipShape(StickyNotePaperShape())
         .overlay {
             StickyNotePaperShape()
-                .stroke(.black.opacity(0.14), lineWidth: 0.7)
+                .stroke(.black.opacity(0.055), lineWidth: 0.7)
         }
         .compositingGroup()
-        .shadow(color: .black.opacity(showsShadow ? 0.18 : 0), radius: 14, x: 8, y: 10)
-        .shadow(color: .black.opacity(showsShadow ? 0.10 : 0), radius: 3, x: 0, y: 2)
+        .shadow(color: .black.opacity(showsShadow ? 0.12 : 0), radius: 18, x: 4, y: 12)
+        .shadow(color: .black.opacity(showsShadow ? 0.06 : 0), radius: 3, x: 0, y: 1)
     }
 }
 
@@ -141,9 +141,9 @@ struct StickyNotePaperBackground: View {
 
             LinearGradient(
                 colors: [
-                    .white.opacity(0.22),
+                    .white.opacity(0.34),
                     .clear,
-                    .black.opacity(0.05)
+                    .black.opacity(0.035)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -161,7 +161,7 @@ struct StickyNotePaperBackground: View {
             LinearGradient(
                 colors: [
                     .clear,
-                    .black.opacity(0.07)
+                    .black.opacity(0.045)
                 ],
                 startPoint: .center,
                 endPoint: .bottomTrailing
@@ -190,7 +190,7 @@ private struct StickyNotePaperEdgeTone: View {
 
                 Spacer(minLength: 0)
 
-                Color.black.opacity(0.07)
+                Color.black.opacity(0.035)
                     .frame(height: 1)
             }
 
@@ -199,7 +199,7 @@ private struct StickyNotePaperEdgeTone: View {
 
                 LinearGradient(
                     colors: [
-                        .black.opacity(0.09),
+                        .black.opacity(0.045),
                         .clear
                     ],
                     startPoint: .trailing,
@@ -217,30 +217,27 @@ private enum StickyNotePaperMetrics {
         let shortestSide = min(rect.width, rect.height)
         guard shortestSide > 0 else { return 0 }
 
-        let minimum = min(shortestSide * 0.36, 32)
-        let maximum = min(shortestSide * 0.48, 88)
-        return min(max(shortestSide * 0.30, minimum), maximum)
+        let minimum = min(shortestSide * 0.30, 38)
+        let maximum = min(shortestSide * 0.40, 58)
+        return min(max(shortestSide * 0.27, minimum), maximum)
     }
 }
 
 private struct StickyNoteCornerCurl: View {
-    let color: Color
-
     var body: some View {
         ZStack {
             StickyNoteCurlPocketShadowShape()
-                .fill(.black.opacity(0.20))
-                .blur(radius: 2.4)
-                .offset(x: -1.5, y: 1.5)
+                .fill(.black.opacity(0.16))
+                .blur(radius: 3.2)
+                .offset(x: -1.0, y: 1.4)
 
             StickyNoteCurlFoldShape()
                 .fill(
                     LinearGradient(
                         colors: [
-                            color.opacity(0.95),
-                            .white.opacity(0.38),
-                            color.opacity(0.82),
-                            .black.opacity(0.16)
+                            Color(red: 1.0, green: 0.95, blue: 0.58),
+                            Color(red: 1.0, green: 0.82, blue: 0.28),
+                            Color(red: 0.76, green: 0.52, blue: 0.08)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -248,15 +245,15 @@ private struct StickyNoteCornerCurl: View {
                 )
                 .overlay {
                     StickyNoteCurlFoldShape()
-                        .stroke(.white.opacity(0.20), lineWidth: 0.7)
+                        .stroke(.white.opacity(0.24), lineWidth: 0.7)
                 }
 
             StickyNoteCurlCreaseShape()
-                .stroke(.black.opacity(0.16), lineWidth: 1.0)
+                .stroke(.black.opacity(0.12), lineWidth: 0.9)
                 .blur(radius: 0.2)
 
             StickyNoteCurlHighlightShape()
-                .stroke(.white.opacity(0.36), lineWidth: 1.2)
+                .stroke(.white.opacity(0.48), lineWidth: 1.1)
                 .blur(radius: 0.2)
         }
         .allowsHitTesting(false)
@@ -269,34 +266,34 @@ private struct StickyNoteCurlFoldShape: Shape {
         guard curlSize > 0 else { return Path() }
 
         let bottomAnchor = CGPoint(
-            x: rect.maxX - (curlSize * 0.98),
-            y: rect.maxY - (curlSize * 0.02)
+            x: rect.maxX - (curlSize * 0.94),
+            y: rect.maxY - (curlSize * 0.015)
         )
         let innerPoint = CGPoint(
-            x: rect.maxX - (curlSize * 0.18),
-            y: rect.maxY - (curlSize * 0.18)
+            x: rect.maxX - (curlSize * 0.15),
+            y: rect.maxY - (curlSize * 0.16)
         )
         let rightAnchor = CGPoint(
-            x: rect.maxX - (curlSize * 0.02),
-            y: rect.maxY - (curlSize * 0.98)
+            x: rect.maxX - (curlSize * 0.015),
+            y: rect.maxY - (curlSize * 0.94)
         )
 
         var path = Path()
         path.move(to: bottomAnchor)
         path.addCurve(
             to: innerPoint,
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.58), y: rect.maxY),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.30), y: rect.maxY - (curlSize * 0.06))
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.55), y: rect.maxY + (curlSize * 0.01)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.28), y: rect.maxY - (curlSize * 0.04))
         )
         path.addCurve(
             to: rightAnchor,
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.08), y: rect.maxY - (curlSize * 0.34)),
-            control2: CGPoint(x: rect.maxX, y: rect.maxY - (curlSize * 0.62))
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.05), y: rect.maxY - (curlSize * 0.33)),
+            control2: CGPoint(x: rect.maxX + (curlSize * 0.01), y: rect.maxY - (curlSize * 0.58))
         )
         path.addCurve(
             to: bottomAnchor,
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.18), y: rect.maxY - (curlSize * 0.70)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.58), y: rect.maxY - (curlSize * 0.24))
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.18), y: rect.maxY - (curlSize * 0.66)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.55), y: rect.maxY - (curlSize * 0.22))
         )
         path.closeSubpath()
 
@@ -338,11 +335,11 @@ private struct StickyNoteCurlCreaseShape: Shape {
         guard curlSize > 0 else { return Path() }
 
         var path = Path()
-        path.move(to: CGPoint(x: rect.maxX - (curlSize * 0.92), y: rect.maxY - (curlSize * 0.02)))
+        path.move(to: CGPoint(x: rect.maxX - (curlSize * 0.88), y: rect.maxY - (curlSize * 0.025)))
         path.addCurve(
-            to: CGPoint(x: rect.maxX - (curlSize * 0.02), y: rect.maxY - (curlSize * 0.92)),
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.34), y: rect.maxY - (curlSize * 0.02)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.02), y: rect.maxY - (curlSize * 0.34))
+            to: CGPoint(x: rect.maxX - (curlSize * 0.025), y: rect.maxY - (curlSize * 0.88)),
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.34), y: rect.maxY - (curlSize * 0.025)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.025), y: rect.maxY - (curlSize * 0.34))
         )
 
         return path
@@ -355,11 +352,11 @@ private struct StickyNoteCurlHighlightShape: Shape {
         guard curlSize > 0 else { return Path() }
 
         var path = Path()
-        path.move(to: CGPoint(x: rect.maxX - (curlSize * 0.70), y: rect.maxY - (curlSize * 0.08)))
+        path.move(to: CGPoint(x: rect.maxX - (curlSize * 0.66), y: rect.maxY - (curlSize * 0.09)))
         path.addCurve(
-            to: CGPoint(x: rect.maxX - (curlSize * 0.08), y: rect.maxY - (curlSize * 0.70)),
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.34), y: rect.maxY - (curlSize * 0.10)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.10), y: rect.maxY - (curlSize * 0.34))
+            to: CGPoint(x: rect.maxX - (curlSize * 0.09), y: rect.maxY - (curlSize * 0.66)),
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.32), y: rect.maxY - (curlSize * 0.11)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.11), y: rect.maxY - (curlSize * 0.32))
         )
 
         return path
@@ -379,18 +376,18 @@ private struct StickyNotePaperTexture: View {
     }
 
     private static let fibers: [Fiber] = [
-        Fiber(id: 0, x: 0.17, y: 0.10, width: 0.50, thickness: 0.55, rotation: -2, opacity: 0.13, isHighlight: true),
-        Fiber(id: 1, x: 0.72, y: 0.14, width: 0.30, thickness: 0.45, rotation: 3, opacity: 0.08, isHighlight: false),
-        Fiber(id: 2, x: 0.42, y: 0.22, width: 0.62, thickness: 0.55, rotation: 1, opacity: 0.10, isHighlight: true),
-        Fiber(id: 3, x: 0.66, y: 0.29, width: 0.38, thickness: 0.45, rotation: -3, opacity: 0.08, isHighlight: false),
-        Fiber(id: 4, x: 0.24, y: 0.36, width: 0.40, thickness: 0.50, rotation: 3, opacity: 0.09, isHighlight: false),
-        Fiber(id: 5, x: 0.57, y: 0.44, width: 0.58, thickness: 0.55, rotation: -1, opacity: 0.11, isHighlight: true),
-        Fiber(id: 6, x: 0.20, y: 0.52, width: 0.34, thickness: 0.45, rotation: -4, opacity: 0.09, isHighlight: true),
-        Fiber(id: 7, x: 0.78, y: 0.59, width: 0.44, thickness: 0.50, rotation: 2, opacity: 0.08, isHighlight: false),
-        Fiber(id: 8, x: 0.36, y: 0.67, width: 0.56, thickness: 0.55, rotation: -1, opacity: 0.09, isHighlight: false),
-        Fiber(id: 9, x: 0.64, y: 0.76, width: 0.36, thickness: 0.45, rotation: 3, opacity: 0.10, isHighlight: true),
-        Fiber(id: 10, x: 0.18, y: 0.85, width: 0.48, thickness: 0.50, rotation: 1, opacity: 0.08, isHighlight: false),
-        Fiber(id: 11, x: 0.52, y: 0.91, width: 0.52, thickness: 0.45, rotation: -2, opacity: 0.09, isHighlight: true)
+        Fiber(id: 0, x: 0.17, y: 0.10, width: 0.50, thickness: 0.55, rotation: -2, opacity: 0.08, isHighlight: true),
+        Fiber(id: 1, x: 0.72, y: 0.14, width: 0.30, thickness: 0.45, rotation: 3, opacity: 0.05, isHighlight: false),
+        Fiber(id: 2, x: 0.42, y: 0.22, width: 0.62, thickness: 0.55, rotation: 1, opacity: 0.07, isHighlight: true),
+        Fiber(id: 3, x: 0.66, y: 0.29, width: 0.38, thickness: 0.45, rotation: -3, opacity: 0.05, isHighlight: false),
+        Fiber(id: 4, x: 0.24, y: 0.36, width: 0.40, thickness: 0.50, rotation: 3, opacity: 0.06, isHighlight: false),
+        Fiber(id: 5, x: 0.57, y: 0.44, width: 0.58, thickness: 0.55, rotation: -1, opacity: 0.07, isHighlight: true),
+        Fiber(id: 6, x: 0.20, y: 0.52, width: 0.34, thickness: 0.45, rotation: -4, opacity: 0.06, isHighlight: true),
+        Fiber(id: 7, x: 0.78, y: 0.59, width: 0.44, thickness: 0.50, rotation: 2, opacity: 0.05, isHighlight: false),
+        Fiber(id: 8, x: 0.36, y: 0.67, width: 0.56, thickness: 0.55, rotation: -1, opacity: 0.06, isHighlight: false),
+        Fiber(id: 9, x: 0.64, y: 0.76, width: 0.36, thickness: 0.45, rotation: 3, opacity: 0.07, isHighlight: true),
+        Fiber(id: 10, x: 0.18, y: 0.85, width: 0.48, thickness: 0.50, rotation: 1, opacity: 0.05, isHighlight: false),
+        Fiber(id: 11, x: 0.52, y: 0.91, width: 0.52, thickness: 0.45, rotation: -2, opacity: 0.06, isHighlight: true)
     ]
 
     var body: some View {
@@ -412,7 +409,7 @@ private struct StickyNotePaperTexture: View {
             }
         }
         .blendMode(.multiply)
-        .opacity(0.9)
+        .opacity(0.55)
         .allowsHitTesting(false)
     }
 }
@@ -443,24 +440,31 @@ struct StickyNoteCardView: View {
 
     var body: some View {
         if let note = noteObservation.note {
-            StickyNoteCardChrome(color: note.color.tint) {
-                VStack(alignment: .leading, spacing: 8) {
-                    if note.needsCloudUpload {
-                        HStack {
-                            Spacer()
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+            StickyNoteCard(color: note.color.tint) {
+                ZStack(alignment: .topTrailing) {
+                    Text(note.content.isEmpty ? "Empty Note" : note.title)
+                        .font(StickyNoteTypography.cardTitleFont)
+                        .foregroundStyle(Color.black.opacity(0.88))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.78)
+                        .truncationMode(.tail)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, 24)
+                        .offset(y: -6)
 
-                    Text(note.content.isEmpty ? "Empty Note" : note.content)
-                        .font(StickyNoteTypography.bodyFont)
-                        .foregroundStyle(.black)
-                        .lineLimit(8)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    if note.needsCloudUpload {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.caption2)
+                            .foregroundStyle(Color.black.opacity(0.42))
+                            .padding(2)
+                    }
                 }
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: StickyNoteCardLayout.height - (StickyNoteCardLayout.contentPadding * 2)
+                )
             }
             .accessibilityIdentifier("StickyNotes.noteCard")
         }
@@ -476,7 +480,7 @@ struct HomeScreenStickyNoteEditorCardView: View {
 
     var body: some View {
         if let note = noteObservation.note {
-            StickyNoteCardChrome(color: note.color.tint) {
+            StickyNoteCard(color: note.color.tint) {
                 VStack(alignment: .leading, spacing: 8) {
                     if note.needsCloudUpload {
                         HStack {
@@ -677,6 +681,8 @@ private struct MobileNotesSceneContent: View {
                         }
                     }
                     .navigationTitle("Stickies")
+                    .navigationBarTitleDisplayMode(.large)
+                    .toolbarBackground(.hidden, for: .navigationBar)
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button {
@@ -684,7 +690,18 @@ private struct MobileNotesSceneContent: View {
                                 beginEditing(noteID: id)
                             } label: {
                                 Image(systemName: "plus")
+                                    .font(.system(size: 26, weight: .regular))
+                                    .foregroundStyle(Color.black.opacity(0.92))
+                                    .frame(width: 54, height: 54)
+                                    .background {
+                                        Circle()
+                                            .fill(Color(.systemBackground).opacity(0.96))
+                                            .shadow(color: .black.opacity(0.08), radius: 18, x: 0, y: 8)
+                                            .shadow(color: .black.opacity(0.05), radius: 3, x: 0, y: 1)
+                                    }
+                                    .contentShape(Circle())
                             }
+                            .buttonStyle(.plain)
                             .accessibilityIdentifier("StickyNotes.addNoteButton")
                         }
 
