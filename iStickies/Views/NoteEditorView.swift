@@ -292,7 +292,9 @@ private struct NoteEditorContent: View {
         if let note = noteObservation.note {
 #if os(macOS)
             StickyNoteEditor(noteID: noteID, autoFocusOnAppear: autoFocusOnAppear)
-                .background(note.color.tint)
+                .background {
+                    StickyNotePaperBackground(color: note.color.tint)
+                }
 #else
             GeometryReader { proxy in
                 ZStack {
