@@ -16,6 +16,16 @@ enum StickyNoteCardLayout {
     }
 }
 
+enum StickyNotesKeyboardFrame {
+    static func coversScene(endFrame: CGRect, sceneFrame: CGRect) -> Bool {
+        guard !endFrame.isNull, !endFrame.isEmpty, !sceneFrame.isNull, !sceneFrame.isEmpty else {
+            return false
+        }
+
+        return endFrame.intersects(sceneFrame)
+    }
+}
+
 struct StickyNoteCardChrome<Content: View>: View {
     let color: Color
     @ViewBuilder let content: Content
@@ -397,7 +407,10 @@ private struct MobileNotesSceneContent: View {
                                 .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
                                     scrollEditingNoteIntoView(with: scrollProxy, delay: 0.18)
                                 }
-                                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
+                                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { notification in
+                                    guard keyboardEndFrameCoversScene(notification, sceneFrame: geometry.frame(in: .global)) else {
+                                        return
+                                    }
                                     scrollEditingNoteIntoView(with: scrollProxy, delay: 0.08)
                                 }
 #endif
@@ -494,6 +507,16 @@ private struct MobileNotesSceneContent: View {
         guard let editingNoteID else { return }
         scrollNoteIntoView(editingNoteID, with: scrollProxy, delay: delay)
     }
+
+#if os(iOS)
+    private func keyboardEndFrameCoversScene(_ notification: Notification, sceneFrame: CGRect) -> Bool {
+        guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
+            return false
+        }
+
+        return StickyNotesKeyboardFrame.coversScene(endFrame: endFrame, sceneFrame: sceneFrame)
+    }
+#endif
 
     private func scrollNoteIntoView(
         _ noteID: String,

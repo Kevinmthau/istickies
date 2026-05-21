@@ -7,6 +7,7 @@
 
 import CloudKit
 import Combine
+import CoreGraphics
 import Foundation
 import Testing
 @testable import iStickies
@@ -16,6 +17,23 @@ import AppKit
 
 @MainActor
 struct iStickiesTests {
+    @Test func keyboardEndFrameCoversSceneOnlyWhenIntersectingScene() {
+        let sceneFrame = CGRect(x: 0, y: 0, width: 390, height: 844)
+
+        #expect(StickyNotesKeyboardFrame.coversScene(
+            endFrame: CGRect(x: 0, y: 510, width: 390, height: 334),
+            sceneFrame: sceneFrame
+        ))
+        #expect(!StickyNotesKeyboardFrame.coversScene(
+            endFrame: CGRect(x: 0, y: 844, width: 390, height: 334),
+            sceneFrame: sceneFrame
+        ))
+        #expect(!StickyNotesKeyboardFrame.coversScene(
+            endFrame: .zero,
+            sceneFrame: sceneFrame
+        ))
+    }
+
     @Test func syncDownloadsRemoteNotes() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let remoteNote = StickyNote(
