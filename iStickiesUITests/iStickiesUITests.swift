@@ -160,13 +160,12 @@ final class iStickiesUITests: XCTestCase {
         XCTAssertTrue(deleteButton.waitForExistence(timeout: 4))
         deleteButton.click()
 #else
-        let editorCard = app.otherElements["StickyNotes.noteEditorCard"].firstMatch
-        let card: XCUIElement
-        if editorCard.waitForExistence(timeout: 2) {
-            card = editorCard
-        } else {
-            card = app.otherElements["StickyNotes.noteCard"].firstMatch
+        let doneButton = app.buttons["StickyNotes.doneEditingButton"].firstMatch
+        if doneButton.waitForExistence(timeout: 2) {
+            doneButton.tap()
         }
+
+        let card = app.otherElements["StickyNotes.noteCard"].firstMatch
         XCTAssertTrue(card.waitForExistence(timeout: 4))
         card.press(forDuration: 1.0)
 
