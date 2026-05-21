@@ -80,7 +80,19 @@ struct StickyNotePaperSurface: View {
 
 struct StickyNotePaperShape: Shape {
     func path(in rect: CGRect) -> Path {
-        guard rect.width > 0, rect.height > 0 else { return Path() }
+        Path(StickyNotePaperHitRegion.path(in: rect))
+    }
+}
+
+enum StickyNotePaperHitRegion {
+    static func contains(_ point: CGPoint, in rect: CGRect) -> Bool {
+        guard rect.width > 0, rect.height > 0 else { return false }
+        return path(in: rect).contains(point, using: .winding, transform: .identity)
+    }
+
+    static func path(in rect: CGRect) -> CGPath {
+        let path = CGMutablePath()
+        guard rect.width > 0, rect.height > 0 else { return path }
 
         let cornerRadius = min(
             StickyNoteCardLayout.cornerRadius,
@@ -92,7 +104,6 @@ struct StickyNotePaperShape: Shape {
         let rightCurveStartY = max(rect.minY + cornerRadius, rect.maxY - curlReach)
         let bottomCurveEndX = max(rect.minX + cornerRadius, rect.maxX - curlReach)
 
-        var path = Path()
         path.move(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
         path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
         path.addQuadCurve(

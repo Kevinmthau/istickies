@@ -286,7 +286,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
             )
         } ?? NSRect(origin: origin, size: Self.defaultContentSize)
 
-        let hostingController = NSHostingController(
+        let hostingView = StickyNotePaperHitRegionHostingView(
             rootView: NoteEditorView(noteID: note.id).stickyNotesStore(store)
         )
 
@@ -298,7 +298,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         )
 
         delegate = self
-        contentViewController = hostingController
+        contentView = hostingView
         contentMinSize = Self.minimumContentSize
         minSize = NSSize(width: Self.minimumContentSize.width, height: Self.minimumContentSize.height)
         titleVisibility = .hidden
@@ -436,6 +436,25 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         isClosingFromCoordinator = false
         isPresentingDeleteConfirmation = false
         isClosingForApplicationTermination = false
+    }
+}
+
+private final class StickyNotePaperHitRegionHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard StickyNotePaperHitRegion.contains(swiftUIPoint(for: point), in: bounds) else {
+            return nil
+        }
+
+        return super.hitTest(point)
+    }
+
+    private func swiftUIPoint(for point: NSPoint) -> CGPoint {
+        guard !isFlipped else { return point }
+
+        return CGPoint(
+            x: point.x,
+            y: bounds.maxY - point.y + bounds.minY
+        )
     }
 }
 
