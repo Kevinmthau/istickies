@@ -296,6 +296,7 @@ private struct NoteEditorContent: View {
                 .background {
                     StickyNotePaperSurface(color: note.color.tint, showsShadow: false)
                 }
+                .contentShape(StickyNotePaperShape())
 #else
             GeometryReader { proxy in
                 ZStack {
