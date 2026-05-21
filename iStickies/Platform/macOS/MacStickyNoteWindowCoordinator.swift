@@ -348,8 +348,8 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
 
     func apply(note: StickyNote, forceFrame: Bool = false) {
         title = ""
-        backgroundColor = .clear
-        isOpaque = false
+        backgroundColor = note.color.nsColor
+        isOpaque = true
 
         guard let preferredFrame = note.preferredFrame else { return }
 
