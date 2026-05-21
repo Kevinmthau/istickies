@@ -213,42 +213,48 @@ private struct MobileNotesSceneContent: View {
                         Color(.systemGroupedBackground)
                             .ignoresSafeArea()
 
-                        if noteListObservation.noteIDs.isEmpty {
-                            ContentUnavailableView(
-                                "No Notes",
-                                systemImage: "note.text",
-                                description: Text("Tap + to create a sticky note.")
-                            )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
+                        GeometryReader { geometry in
                             ScrollView {
-                                LazyVGrid(columns: columns, spacing: StickyNoteCardLayout.gridSpacing) {
-                                    ForEach(orderedNoteIDs, id: \.self) { noteID in
-                                        if editingNoteID == noteID {
-                                            HomeScreenStickyNoteEditorCardView(
-                                                noteObservation: store.noteObservation(withID: noteID)
-                                            )
-                                        } else {
-                                            StickyNoteCardView(
-                                                noteObservation: store.noteObservation(withID: noteID)
-                                            )
-                                                .contentShape(
-                                                    RoundedRectangle(
-                                                        cornerRadius: StickyNoteCardLayout.cornerRadius,
-                                                        style: .continuous
-                                                    )
+                                if noteListObservation.noteIDs.isEmpty {
+                                    ContentUnavailableView(
+                                        "No Notes",
+                                        systemImage: "note.text",
+                                        description: Text("Tap + to create a sticky note.")
+                                    )
+                                    .frame(maxWidth: .infinity)
+                                    .frame(minHeight: geometry.size.height)
+                                } else {
+                                    LazyVGrid(columns: columns, spacing: StickyNoteCardLayout.gridSpacing) {
+                                        ForEach(orderedNoteIDs, id: \.self) { noteID in
+                                            if editingNoteID == noteID {
+                                                HomeScreenStickyNoteEditorCardView(
+                                                    noteObservation: store.noteObservation(withID: noteID)
                                                 )
-                                                .onTapGesture {
-                                                    beginEditing(noteID: noteID)
-                                                }
-                                                .onLongPressGesture {
-                                                    noteToDelete = noteID
-                                                }
+                                            } else {
+                                                StickyNoteCardView(
+                                                    noteObservation: store.noteObservation(withID: noteID)
+                                                )
+                                                    .contentShape(
+                                                        RoundedRectangle(
+                                                            cornerRadius: StickyNoteCardLayout.cornerRadius,
+                                                            style: .continuous
+                                                        )
+                                                    )
+                                                    .onTapGesture {
+                                                        beginEditing(noteID: noteID)
+                                                    }
+                                                    .onLongPressGesture {
+                                                        noteToDelete = noteID
+                                                    }
+                                            }
                                         }
                                     }
+                                    .padding(StickyNoteCardLayout.outerPadding)
+                                    .frame(maxWidth: .infinity, alignment: .top)
                                 }
-                                .padding(StickyNoteCardLayout.outerPadding)
-                                .frame(maxWidth: .infinity, alignment: .top)
+                            }
+                            .refreshable {
+                                await store.syncNow()
                             }
                             .scrollDismissesKeyboard(.interactively)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -256,15 +262,6 @@ private struct MobileNotesSceneContent: View {
                     }
                     .navigationTitle("Stickies")
                     .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button {
-                                Task { await store.syncNow() }
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                            }
-                            .accessibilityIdentifier("StickyNotes.syncButton")
-                        }
-
                         ToolbarItem(placement: .topBarTrailing) {
                             Button {
                                 let id = store.createNote()
