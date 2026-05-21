@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreText
 #if os(macOS)
 import AppKit
 #elseif os(iOS)
@@ -47,16 +48,35 @@ enum StickyNoteTypography {
     static let bodySize: CGFloat = 18
     static let editorSize: CGFloat = 19
 
+    private static let bundledHandwrittenFontResource = "Cedarville-Cursive"
+    private static let bundledHandwrittenFontName = "Cedarville-Cursive"
+
     private static let handwrittenFontNames = [
+        bundledHandwrittenFontName,
         "Noteworthy-Light",
         "MarkerFelt-Thin",
         "ChalkboardSE-Regular",
         "BradleyHandITCTT-Bold"
     ]
 
+    private static func registerBundledFontsIfNeeded() {
+        guard let fontURL = Bundle.main.url(
+            forResource: bundledHandwrittenFontResource,
+            withExtension: "ttf"
+        ) ?? Bundle.main.url(
+            forResource: bundledHandwrittenFontResource,
+            withExtension: "ttf",
+            subdirectory: "Fonts"
+        ) else { return }
+
+        _ = CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
+    }
+
 #if os(macOS)
     private static let handwrittenFontName: String = {
-        handwrittenFontNames.first { NSFont(name: $0, size: editorSize) != nil }
+        registerBundledFontsIfNeeded()
+
+        return handwrittenFontNames.first { NSFont(name: $0, size: editorSize) != nil }
             ?? NSFont.systemFont(ofSize: editorSize).fontName
     }()
 
@@ -65,7 +85,9 @@ enum StickyNoteTypography {
         ?? .systemFont(ofSize: editorSize)
 #elseif os(iOS)
     private static let handwrittenFontName: String = {
-        handwrittenFontNames.first { UIFont(name: $0, size: editorSize) != nil }
+        registerBundledFontsIfNeeded()
+
+        return handwrittenFontNames.first { UIFont(name: $0, size: editorSize) != nil }
             ?? UIFont.systemFont(ofSize: editorSize).fontName
     }()
 
