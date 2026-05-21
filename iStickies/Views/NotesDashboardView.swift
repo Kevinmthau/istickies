@@ -7,7 +7,7 @@ enum StickyNoteCardLayout {
     static let gridSpacing: CGFloat = 16
     static let outerPadding: CGFloat = 16
     static let contentPadding: CGFloat = 16
-    static let cornerRadius: CGFloat = 4
+    static let cornerRadius: CGFloat = 2
     static let height: CGFloat = 180
 
     static func cardWidth(for availableWidth: CGFloat) -> CGFloat {
@@ -46,28 +46,78 @@ struct StickyNoteCardChrome<Content: View>: View {
     }
 
     private var paperBody: some View {
-        let cardShape = RoundedRectangle(
-            cornerRadius: StickyNoteCardLayout.cornerRadius,
-            style: .continuous
-        )
-
-        return content
+        content
             .padding(StickyNoteCardLayout.contentPadding)
             .frame(maxWidth: .infinity, minHeight: StickyNoteCardLayout.height, alignment: .topLeading)
+            .clipShape(StickyNotePaperShape())
             .background {
-                ZStack {
-                    StickyNotePaperBackground(color: color)
-                    StickyNotePaperEdgeTone()
-                }
-                .clipShape(cardShape)
+                StickyNotePaperSurface(color: color)
             }
-            .clipShape(cardShape)
-            .overlay {
-                cardShape
-                    .strokeBorder(.black.opacity(0.12), lineWidth: 0.7)
-            }
-            .shadow(color: .black.opacity(0.13), radius: 5, x: 0, y: 3)
-            .shadow(color: .black.opacity(0.06), radius: 1, x: 0, y: 1)
+            .contentShape(StickyNotePaperShape())
+    }
+}
+
+struct StickyNotePaperSurface: View {
+    let color: Color
+    var showsShadow = true
+
+    var body: some View {
+        ZStack {
+            StickyNotePaperBackground(color: color)
+            StickyNotePaperEdgeTone()
+            StickyNoteCornerCurl(color: color)
+        }
+        .clipShape(StickyNotePaperShape())
+        .overlay {
+            StickyNotePaperShape()
+                .stroke(.black.opacity(0.14), lineWidth: 0.7)
+        }
+        .compositingGroup()
+        .shadow(color: .black.opacity(showsShadow ? 0.18 : 0), radius: 14, x: 8, y: 10)
+        .shadow(color: .black.opacity(showsShadow ? 0.10 : 0), radius: 3, x: 0, y: 2)
+    }
+}
+
+struct StickyNotePaperShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        guard rect.width > 0, rect.height > 0 else { return Path() }
+
+        let cornerRadius = min(
+            StickyNoteCardLayout.cornerRadius,
+            rect.width / 2,
+            rect.height / 2
+        )
+        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
+        let curlReach = curlSize * 0.96
+        let rightCurveStartY = max(rect.minY + cornerRadius, rect.maxY - curlReach)
+        let bottomCurveEndX = max(rect.minX + cornerRadius, rect.maxX - curlReach)
+
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + cornerRadius),
+            control: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rightCurveStartY))
+        path.addCurve(
+            to: CGPoint(x: bottomCurveEndX, y: rect.maxY),
+            control1: CGPoint(x: rect.maxX, y: rect.maxY - (curlSize * 0.38)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.24), y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.maxY - cornerRadius),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY),
+            control: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.closeSubpath()
+
+        return path
     }
 }
 
@@ -80,9 +130,9 @@ struct StickyNotePaperBackground: View {
 
             LinearGradient(
                 colors: [
-                    .white.opacity(0.14),
+                    .white.opacity(0.22),
                     .clear,
-                    .black.opacity(0.035)
+                    .black.opacity(0.05)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -90,11 +140,20 @@ struct StickyNotePaperBackground: View {
 
             LinearGradient(
                 colors: [
-                    .white.opacity(0.08),
+                    .white.opacity(0.10),
                     .clear
                 ],
                 startPoint: .leading,
                 endPoint: .trailing
+            )
+
+            LinearGradient(
+                colors: [
+                    .clear,
+                    .black.opacity(0.07)
+                ],
+                startPoint: .center,
+                endPoint: .bottomTrailing
             )
 
             StickyNotePaperTexture()
@@ -123,8 +182,176 @@ private struct StickyNotePaperEdgeTone: View {
                 Color.black.opacity(0.07)
                     .frame(height: 1)
             }
+
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+
+                LinearGradient(
+                    colors: [
+                        .black.opacity(0.09),
+                        .clear
+                    ],
+                    startPoint: .trailing,
+                    endPoint: .leading
+                )
+                .frame(width: 3)
+            }
         }
         .allowsHitTesting(false)
+    }
+}
+
+private enum StickyNotePaperMetrics {
+    static func curlSize(in rect: CGRect) -> CGFloat {
+        let shortestSide = min(rect.width, rect.height)
+        guard shortestSide > 0 else { return 0 }
+
+        let minimum = min(shortestSide * 0.36, 32)
+        let maximum = min(shortestSide * 0.48, 88)
+        return min(max(shortestSide * 0.30, minimum), maximum)
+    }
+}
+
+private struct StickyNoteCornerCurl: View {
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            StickyNoteCurlPocketShadowShape()
+                .fill(.black.opacity(0.20))
+                .blur(radius: 2.4)
+                .offset(x: -1.5, y: 1.5)
+
+            StickyNoteCurlFoldShape()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            color.opacity(0.95),
+                            .white.opacity(0.38),
+                            color.opacity(0.82),
+                            .black.opacity(0.16)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay {
+                    StickyNoteCurlFoldShape()
+                        .stroke(.white.opacity(0.20), lineWidth: 0.7)
+                }
+
+            StickyNoteCurlCreaseShape()
+                .stroke(.black.opacity(0.16), lineWidth: 1.0)
+                .blur(radius: 0.2)
+
+            StickyNoteCurlHighlightShape()
+                .stroke(.white.opacity(0.36), lineWidth: 1.2)
+                .blur(radius: 0.2)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct StickyNoteCurlFoldShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
+        guard curlSize > 0 else { return Path() }
+
+        let bottomAnchor = CGPoint(
+            x: rect.maxX - (curlSize * 0.98),
+            y: rect.maxY - (curlSize * 0.02)
+        )
+        let innerPoint = CGPoint(
+            x: rect.maxX - (curlSize * 0.18),
+            y: rect.maxY - (curlSize * 0.18)
+        )
+        let rightAnchor = CGPoint(
+            x: rect.maxX - (curlSize * 0.02),
+            y: rect.maxY - (curlSize * 0.98)
+        )
+
+        var path = Path()
+        path.move(to: bottomAnchor)
+        path.addCurve(
+            to: innerPoint,
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.58), y: rect.maxY),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.30), y: rect.maxY - (curlSize * 0.06))
+        )
+        path.addCurve(
+            to: rightAnchor,
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.08), y: rect.maxY - (curlSize * 0.34)),
+            control2: CGPoint(x: rect.maxX, y: rect.maxY - (curlSize * 0.62))
+        )
+        path.addCurve(
+            to: bottomAnchor,
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.18), y: rect.maxY - (curlSize * 0.70)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.58), y: rect.maxY - (curlSize * 0.24))
+        )
+        path.closeSubpath()
+
+        return path
+    }
+}
+
+private struct StickyNoteCurlPocketShadowShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
+        guard curlSize > 0 else { return Path() }
+
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX - (curlSize * 1.02), y: rect.maxY))
+        path.addCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY - (curlSize * 1.02)),
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.36), y: rect.maxY),
+            control2: CGPoint(x: rect.maxX, y: rect.maxY - (curlSize * 0.36))
+        )
+        path.addCurve(
+            to: CGPoint(x: rect.maxX - (curlSize * 0.28), y: rect.maxY - (curlSize * 0.24)),
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.04), y: rect.maxY - (curlSize * 0.62)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.12), y: rect.maxY - (curlSize * 0.36))
+        )
+        path.addCurve(
+            to: CGPoint(x: rect.maxX - (curlSize * 1.02), y: rect.maxY),
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.54), y: rect.maxY - (curlSize * 0.08)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.82), y: rect.maxY)
+        )
+        path.closeSubpath()
+
+        return path
+    }
+}
+
+private struct StickyNoteCurlCreaseShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
+        guard curlSize > 0 else { return Path() }
+
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX - (curlSize * 0.92), y: rect.maxY - (curlSize * 0.02)))
+        path.addCurve(
+            to: CGPoint(x: rect.maxX - (curlSize * 0.02), y: rect.maxY - (curlSize * 0.92)),
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.34), y: rect.maxY - (curlSize * 0.02)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.02), y: rect.maxY - (curlSize * 0.34))
+        )
+
+        return path
+    }
+}
+
+private struct StickyNoteCurlHighlightShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
+        guard curlSize > 0 else { return Path() }
+
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX - (curlSize * 0.70), y: rect.maxY - (curlSize * 0.08)))
+        path.addCurve(
+            to: CGPoint(x: rect.maxX - (curlSize * 0.08), y: rect.maxY - (curlSize * 0.70)),
+            control1: CGPoint(x: rect.maxX - (curlSize * 0.34), y: rect.maxY - (curlSize * 0.10)),
+            control2: CGPoint(x: rect.maxX - (curlSize * 0.10), y: rect.maxY - (curlSize * 0.34))
+        )
+
+        return path
     }
 }
 
@@ -388,10 +615,7 @@ private struct MobileNotesSceneContent: View {
                                                             noteObservation: store.noteObservation(withID: noteID)
                                                         )
                                                         .contentShape(
-                                                            RoundedRectangle(
-                                                                cornerRadius: StickyNoteCardLayout.cornerRadius,
-                                                                style: .continuous
-                                                            )
+                                                            StickyNotePaperShape()
                                                         )
                                                         .onTapGesture {
                                                             beginEditing(noteID: noteID)

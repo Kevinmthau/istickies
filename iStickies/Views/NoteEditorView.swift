@@ -292,8 +292,9 @@ private struct NoteEditorContent: View {
         if let note = noteObservation.note {
 #if os(macOS)
             StickyNoteEditor(noteID: noteID, autoFocusOnAppear: autoFocusOnAppear)
+                .clipShape(StickyNotePaperShape())
                 .background {
-                    StickyNotePaperBackground(color: note.color.tint)
+                    StickyNotePaperSurface(color: note.color.tint, showsShadow: false)
                 }
 #else
             GeometryReader { proxy in
