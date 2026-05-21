@@ -387,20 +387,23 @@ private struct MobileNotesSceneContent: View {
                                                         StickyNoteCardView(
                                                             noteObservation: store.noteObservation(withID: noteID)
                                                         )
-                                                        .contentShape(
-                                                            RoundedRectangle(
-                                                                cornerRadius: StickyNoteCardLayout.cornerRadius,
-                                                                style: .continuous
-                                                            )
-                                                        )
                                                         .onTapGesture {
                                                             beginEditing(noteID: noteID)
                                                         }
-                                                        .onLongPressGesture {
-                                                            noteToDelete = noteID
-                                                        }
                                                     }
                                                 }
+                                                .contentShape(
+                                                    RoundedRectangle(
+                                                        cornerRadius: StickyNoteCardLayout.cornerRadius,
+                                                        style: .continuous
+                                                    )
+                                                )
+                                                .highPriorityGesture(
+                                                    LongPressGesture()
+                                                        .onEnded { _ in
+                                                            noteToDelete = noteID
+                                                        }
+                                                )
                                                 .id(noteID)
                                             }
                                         }
