@@ -35,12 +35,14 @@ The repo is now prepped for Xcode Cloud with a committed shared scheme (`iSticki
 4. Optional script hooks:
    - **Post-clone**: `ci_scripts/ci_post_clone.sh`
    - **Pre-xcodebuild**: `ci_scripts/ci_pre_xcodebuild.sh`
+   - **Post-xcodebuild**: `ci_scripts/ci_post_xcodebuild.sh`
 5. Add signing assets and App Store Connect access in workflow settings, then run the workflow once manually.
 
 ### Notes
 
 - Xcode Cloud/TestFlight account linking is configured in Xcode + App Store Connect UI (not in Git files).
 - `ci_pre_xcodebuild.sh` syncs Apple Generic build numbers to Xcode Cloud's `CI_BUILD_NUMBER` during archive actions so uploads don't reuse the checked-in build number.
+- `ci_post_xcodebuild.sh` generates `TestFlight/WhatToTest.en-US.txt` from recent commit subjects during archive actions, so Xcode Cloud populates TestFlight's "What to Test" field automatically.
 - If App Store Connect already has higher build numbers for this app, set the workflow's next build number in Xcode Cloud before the first upload.
 - After the first successful archive/upload run, future branch pushes can auto-publish to TestFlight based on your workflow trigger rules.
 
