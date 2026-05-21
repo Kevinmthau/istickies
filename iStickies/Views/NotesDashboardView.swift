@@ -65,7 +65,7 @@ struct StickyNotePaperSurface: View {
         ZStack {
             StickyNotePaperBackground(color: color)
             StickyNotePaperEdgeTone()
-            StickyNoteCornerCurl()
+            StickyNoteCornerCurl(color: color)
         }
         .clipShape(StickyNotePaperShape())
         .overlay {
@@ -224,6 +224,8 @@ private enum StickyNotePaperMetrics {
 }
 
 private struct StickyNoteCornerCurl: View {
+    let color: Color
+
     var body: some View {
         ZStack {
             StickyNoteCurlPocketShadowShape()
@@ -232,17 +234,34 @@ private struct StickyNoteCornerCurl: View {
                 .offset(x: -1.0, y: 1.4)
 
             StickyNoteCurlFoldShape()
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 1.0, green: 0.95, blue: 0.58),
-                            Color(red: 1.0, green: 0.82, blue: 0.28),
-                            Color(red: 0.76, green: 0.52, blue: 0.08)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .fill(color)
+                .overlay {
+                    StickyNoteCurlFoldShape()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(0.30),
+                                    .clear,
+                                    .black.opacity(0.24)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                }
+                .overlay {
+                    StickyNoteCurlFoldShape()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(0.10),
+                                    .clear
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                }
                 .overlay {
                     StickyNoteCurlFoldShape()
                         .stroke(.white.opacity(0.24), lineWidth: 0.7)
