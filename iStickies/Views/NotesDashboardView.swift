@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 enum StickyNoteCardLayout {
     static let gridSpacing: CGFloat = 16
@@ -338,50 +341,67 @@ private struct MobileNotesSceneContent: View {
                             .ignoresSafeArea()
 
                         GeometryReader { geometry in
-                            ScrollView {
-                                if noteListObservation.noteIDs.isEmpty {
-                                    ContentUnavailableView(
-                                        "No Notes",
-                                        systemImage: "note.text",
-                                        description: Text("Tap + to create a sticky note.")
-                                    )
-                                    .frame(maxWidth: .infinity)
-                                    .frame(minHeight: geometry.size.height)
-                                } else {
-                                    LazyVGrid(columns: columns, spacing: StickyNoteCardLayout.gridSpacing) {
-                                        ForEach(orderedNoteIDs, id: \.self) { noteID in
-                                            if editingNoteID == noteID {
-                                                HomeScreenStickyNoteEditorCardView(
-                                                    noteObservation: store.noteObservation(withID: noteID)
-                                                )
-                                            } else {
-                                                StickyNoteCardView(
-                                                    noteObservation: store.noteObservation(withID: noteID)
-                                                )
-                                                    .contentShape(
-                                                        RoundedRectangle(
-                                                            cornerRadius: StickyNoteCardLayout.cornerRadius,
-                                                            style: .continuous
+                            ScrollViewReader { scrollProxy in
+                                ScrollView {
+                                    if noteListObservation.noteIDs.isEmpty {
+                                        ContentUnavailableView(
+                                            "No Notes",
+                                            systemImage: "note.text",
+                                            description: Text("Tap + to create a sticky note.")
+                                        )
+                                        .frame(maxWidth: .infinity)
+                                        .frame(minHeight: geometry.size.height)
+                                    } else {
+                                        LazyVGrid(columns: columns, spacing: StickyNoteCardLayout.gridSpacing) {
+                                            ForEach(orderedNoteIDs, id: \.self) { noteID in
+                                                Group {
+                                                    if editingNoteID == noteID {
+                                                        HomeScreenStickyNoteEditorCardView(
+                                                            noteObservation: store.noteObservation(withID: noteID)
                                                         )
-                                                    )
-                                                    .onTapGesture {
-                                                        beginEditing(noteID: noteID)
+                                                    } else {
+                                                        StickyNoteCardView(
+                                                            noteObservation: store.noteObservation(withID: noteID)
+                                                        )
+                                                        .contentShape(
+                                                            RoundedRectangle(
+                                                                cornerRadius: StickyNoteCardLayout.cornerRadius,
+                                                                style: .continuous
+                                                            )
+                                                        )
+                                                        .onTapGesture {
+                                                            beginEditing(noteID: noteID)
+                                                        }
+                                                        .onLongPressGesture {
+                                                            noteToDelete = noteID
+                                                        }
                                                     }
-                                                    .onLongPressGesture {
-                                                        noteToDelete = noteID
-                                                    }
+                                                }
+                                                .id(noteID)
                                             }
                                         }
+                                        .padding(StickyNoteCardLayout.outerPadding)
+                                        .frame(maxWidth: .infinity, alignment: .top)
                                     }
-                                    .padding(StickyNoteCardLayout.outerPadding)
-                                    .frame(maxWidth: .infinity, alignment: .top)
                                 }
+                                .refreshable {
+                                    await store.syncNow()
+                                }
+                                .scrollDismissesKeyboard(.interactively)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                                .onChange(of: editingNoteID) { _, noteID in
+                                    guard let noteID else { return }
+                                    scrollNoteIntoView(noteID, with: scrollProxy)
+                                }
+#if os(iOS)
+                                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                                    scrollEditingNoteIntoView(with: scrollProxy, delay: 0.18)
+                                }
+                                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
+                                    scrollEditingNoteIntoView(with: scrollProxy, delay: 0.08)
+                                }
+#endif
                             }
-                            .refreshable {
-                                await store.syncNow()
-                            }
-                            .scrollDismissesKeyboard(.interactively)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                         }
                     }
                     .navigationTitle("Stickies")
@@ -465,6 +485,27 @@ private struct MobileNotesSceneContent: View {
     private func beginEditing(noteID: String) {
         displayOrderIDs = orderedNoteIDs
         editingNoteID = noteID
+    }
+
+    private func scrollEditingNoteIntoView(
+        with scrollProxy: ScrollViewProxy,
+        delay: TimeInterval = 0.12
+    ) {
+        guard let editingNoteID else { return }
+        scrollNoteIntoView(editingNoteID, with: scrollProxy, delay: delay)
+    }
+
+    private func scrollNoteIntoView(
+        _ noteID: String,
+        with scrollProxy: ScrollViewProxy,
+        delay: TimeInterval = 0.12
+    ) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard editingNoteID == noteID else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                scrollProxy.scrollTo(noteID, anchor: .center)
+            }
+        }
     }
 
     private func syncDisplayOrder(with latestIDs: [String]) {
