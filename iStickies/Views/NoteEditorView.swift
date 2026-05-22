@@ -46,7 +46,7 @@ enum StickyTextEditorLayout {
 
 enum StickyNoteTypography {
     static let bodySize: CGFloat = 18
-    static let cardTitleSize: CGFloat = 24
+    static let cardTitleSize: CGFloat = 20
     static let editorSize: CGFloat = 19
 
     private static let bundledHandwrittenFontResource = "Cedarville-Cursive"
@@ -82,7 +82,7 @@ enum StickyNoteTypography {
     }()
 
     static let bodyFont: Font = .custom(handwrittenFontName, size: bodySize, relativeTo: .body)
-    static let cardTitleFont: Font = .custom(handwrittenFontName, size: cardTitleSize, relativeTo: .title3)
+    static let cardTitleFont: Font = .custom(handwrittenFontName, size: cardTitleSize, relativeTo: .body)
     static let editorFont: NSFont = NSFont(name: handwrittenFontName, size: editorSize)
         ?? .systemFont(ofSize: editorSize)
 #elseif os(iOS)
@@ -94,7 +94,7 @@ enum StickyNoteTypography {
     }()
 
     static let bodyFont: Font = .custom(handwrittenFontName, size: bodySize, relativeTo: .body)
-    static let cardTitleFont: Font = .custom(handwrittenFontName, size: cardTitleSize, relativeTo: .title3)
+    static let cardTitleFont: Font = .custom(handwrittenFontName, size: cardTitleSize, relativeTo: .body)
     static let editorFont: UIFont = {
         let font = UIFont(name: handwrittenFontName, size: editorSize)
             ?? .systemFont(ofSize: editorSize)
