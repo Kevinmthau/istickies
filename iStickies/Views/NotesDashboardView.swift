@@ -612,14 +612,14 @@ private struct AddStickyNoteButton: View {
         Button(action: action) {
             Image(systemName: "plus")
                 .font(.system(size: 27, weight: .regular))
-                .foregroundStyle(Color.black.opacity(0.92))
+                .foregroundStyle(Color.primary.opacity(0.92))
                 .frame(width: 58, height: 58)
                 .background {
                     Circle()
-                        .fill(Color(.systemBackground).opacity(0.98))
+                        .fill(Color(.secondarySystemGroupedBackground).opacity(0.98))
                         .overlay {
                             Circle()
-                                .stroke(.black.opacity(0.06), lineWidth: 0.7)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.7)
                         }
                         .shadow(color: .black.opacity(0.16), radius: 18, x: 0, y: 10)
                         .shadow(color: .black.opacity(0.07), radius: 4, x: 0, y: 2)
