@@ -1223,7 +1223,8 @@ struct iStickiesTests {
 
     @Test func draftSessionPersistsLatestContentAfterDebounce() async throws {
         var persistedContent = "Original"
-        let session = NoteDraftSession()
+        let delayedTaskScheduler = TestDelayedTaskScheduler()
+        let session = NoteDraftSession(delayedTaskScheduler: delayedTaskScheduler)
 
         session.configure(
             noteID: "note",
@@ -1238,7 +1239,7 @@ struct iStickiesTests {
         session.updateDraftContent("First draft")
         session.updateDraftContent("Final draft")
 
-        try await Task.sleep(for: .milliseconds(300))
+        await delayedTaskScheduler.runAll()
 
         #expect(persistedContent == "Final draft")
     }
@@ -1595,7 +1596,7 @@ struct iStickiesTests {
         let deletedNote = try #require(store.note(withID: noteID))
         store.deleteNote(id: noteID)
 
-        try await Task.sleep(for: .milliseconds(180))
+        await store.flushPendingPersistence()
 
         let reloadedCloudService = MockCloudService(remoteNotes: [deletedNote.markedClean()])
         let reloadedStore = StickyNotesStore(
@@ -2245,17 +2246,12 @@ struct iStickiesTests {
     @Test func automaticSyncSchedulerRunsImmediateSyncAndCoalescesThrottledRequests() async {
         var now = Date(timeIntervalSince1970: 0)
         var syncedReasons: [StickyNotesAutomaticSyncReason] = []
-        var scheduledDelays: [TimeInterval] = []
-        var scheduledOperations: [@MainActor () async -> Void] = []
+        let delayedTaskScheduler = TestDelayedTaskScheduler()
 
         let scheduler = StickyNotesAutomaticSyncScheduler(
             minimumSyncInterval: 10,
             now: { now },
-            scheduleDelayedOperation: { delay, operation in
-                scheduledDelays.append(delay)
-                scheduledOperations.append(operation)
-                return StickyNotesAutomaticSyncScheduledTask(cancel: {})
-            },
+            delayedTaskScheduler: delayedTaskScheduler,
             syncOperation: { reason in
                 syncedReasons.append(reason)
             }
@@ -2268,28 +2264,24 @@ struct iStickiesTests {
         await scheduler.requestSync(reason: .networkRestored)
 
         #expect(syncedReasons == [.appActivation])
-        #expect(scheduledDelays == [9])
-        #expect(scheduledOperations.count == 1)
+        #expect(delayedTaskScheduler.timeIntervalDelays == [9])
+        #expect(delayedTaskScheduler.pendingOperationCount == 1)
 
         now = Date(timeIntervalSince1970: 10)
-        await scheduledOperations[0]()
+        await delayedTaskScheduler.runNext()
 
         #expect(syncedReasons == [.appActivation, .networkRestored])
     }
 
     @Test func automaticSyncSchedulerStopCancelsDeferredSync() async {
         var now = Date(timeIntervalSince1970: 0)
-        var didCancel = false
         var syncedReasons: [StickyNotesAutomaticSyncReason] = []
+        let delayedTaskScheduler = TestDelayedTaskScheduler()
 
         let scheduler = StickyNotesAutomaticSyncScheduler(
             minimumSyncInterval: 10,
             now: { now },
-            scheduleDelayedOperation: { _, _ in
-                StickyNotesAutomaticSyncScheduledTask(cancel: {
-                    didCancel = true
-                })
-            },
+            delayedTaskScheduler: delayedTaskScheduler,
             syncOperation: { reason in
                 syncedReasons.append(reason)
             }
@@ -2301,7 +2293,7 @@ struct iStickiesTests {
         scheduler.stop()
 
         #expect(syncedReasons == [.appActivation])
-        #expect(didCancel)
+        #expect(delayedTaskScheduler.cancelledOperationCount == 1)
     }
 
     @Test func automaticSyncSchedulerDrainsRequestReceivedDuringInFlightSync() async {
@@ -2401,6 +2393,30 @@ struct iStickiesTests {
                 now: now
             ) == nil
         )
+    }
+
+    @Test func windowFrameControllerPersistsLocalMoveThroughDelayedScheduler() async {
+        var currentFrame = NSRect(x: 280, y: 360, width: 280, height: 280)
+        var persistedFrames: [StickyNoteFrame] = []
+        let delayedTaskScheduler = TestDelayedTaskScheduler()
+        let controller = StickyNoteWindowFrameController(
+            readCurrentFrame: { currentFrame },
+            applyFrame: { currentFrame = $0 },
+            readPersistedFrame: { persistedFrames.last },
+            persistFrame: { persistedFrames.append($0) },
+            delayedTaskScheduler: delayedTaskScheduler
+        )
+
+        controller.windowDidMove()
+
+        #expect(persistedFrames.isEmpty)
+        #expect(delayedTaskScheduler.timeIntervalDelays == [0.15])
+
+        await delayedTaskScheduler.runAll()
+
+        #expect(persistedFrames == [
+            StickyNoteFrame(x: 280, y: 360, width: 280, height: 280),
+        ])
     }
 
     @Test func stickyWindowGridLayoutReturnsNoFramesForNoWindows() {
@@ -2609,6 +2625,87 @@ struct iStickiesTests {
         return true
     }
 #endif
+}
+
+@MainActor
+private final class TestDelayedTaskScheduler: StickyNotesDelayedTaskScheduling {
+    private final class CancellationState {
+        var isCancelled = false
+    }
+
+    private struct ScheduledOperation {
+        var delay: StickyNotesDelay
+        var operation: @MainActor () async -> Void
+        var cancellationState: CancellationState
+    }
+
+    private var scheduledOperations: [ScheduledOperation] = []
+
+    var cancelledOperationCount: Int {
+        scheduledOperations.filter(\.cancellationState.isCancelled).count
+    }
+
+    var pendingOperationCount: Int {
+        scheduledOperations.filter { !$0.cancellationState.isCancelled }.count
+    }
+
+    var timeIntervalDelays: [TimeInterval] {
+        scheduledOperations.compactMap { scheduledOperation in
+            guard case let .timeInterval(delay) = scheduledOperation.delay else {
+                return nil
+            }
+
+            return delay
+        }
+    }
+
+    func schedule(
+        after delay: TimeInterval,
+        operation: @escaping @MainActor () async -> Void
+    ) -> StickyNotesDelayedTask {
+        schedule(after: .timeInterval(delay), operation: operation)
+    }
+
+    func schedule(
+        after delay: Duration,
+        operation: @escaping @MainActor () async -> Void
+    ) -> StickyNotesDelayedTask {
+        schedule(after: .duration(delay), operation: operation)
+    }
+
+    func runNext() async {
+        while !scheduledOperations.isEmpty {
+            let scheduledOperation = scheduledOperations.removeFirst()
+            guard !scheduledOperation.cancellationState.isCancelled else { continue }
+            await scheduledOperation.operation()
+            return
+        }
+    }
+
+    func runAll() async {
+        while pendingOperationCount > 0 {
+            await runNext()
+        }
+    }
+
+    private func schedule(
+        after delay: StickyNotesDelay,
+        operation: @escaping @MainActor () async -> Void
+    ) -> StickyNotesDelayedTask {
+        let cancellationState = CancellationState()
+        scheduledOperations.append(
+            ScheduledOperation(
+                delay: delay,
+                operation: operation,
+                cancellationState: cancellationState
+            )
+        )
+
+        return StickyNotesDelayedTask { [weak cancellationState] in
+            guard let cancellationState, !cancellationState.isCancelled else { return }
+            cancellationState.isCancelled = true
+        }
+    }
 }
 
 private actor MockCloudService: StickyNotesCloudSyncing {

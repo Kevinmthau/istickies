@@ -10,25 +10,28 @@ final class StickyNoteWindowFrameController {
     private let applyFrame: @MainActor (NSRect) -> Void
     private let readPersistedFrame: @MainActor () -> StickyNoteFrame?
     private let persistFrame: @MainActor (StickyNoteFrame) -> Void
+    private let delayedTaskScheduler: any StickyNotesDelayedTaskScheduling
 
     private(set) var isApplyingModelFrame = false
     private var isLocallyMovingWindow = false
     private var lastLocalFrameReportDate: Date?
     private var pendingLocalFrame: StickyNoteFrame?
-    private var localFramePersistenceTask: Task<Void, Never>?
+    private var localFramePersistenceTask: StickyNotesDelayedTask?
     private var pendingModelFrame: NSRect?
-    private var pendingModelFrameTask: Task<Void, Never>?
+    private var pendingModelFrameTask: StickyNotesDelayedTask?
 
     init(
         readCurrentFrame: @escaping @MainActor () -> NSRect,
         applyFrame: @escaping @MainActor (NSRect) -> Void,
         readPersistedFrame: @escaping @MainActor () -> StickyNoteFrame?,
-        persistFrame: @escaping @MainActor (StickyNoteFrame) -> Void
+        persistFrame: @escaping @MainActor (StickyNoteFrame) -> Void,
+        delayedTaskScheduler: any StickyNotesDelayedTaskScheduling = StickyNotesLiveDelayedTaskScheduler()
     ) {
         self.readCurrentFrame = readCurrentFrame
         self.applyFrame = applyFrame
         self.readPersistedFrame = readPersistedFrame
         self.persistFrame = persistFrame
+        self.delayedTaskScheduler = delayedTaskScheduler
     }
 
     deinit {
@@ -114,13 +117,8 @@ final class StickyNoteWindowFrameController {
     private func schedulePendingModelFrame(_ targetFrame: NSRect, after delay: TimeInterval) {
         pendingModelFrame = targetFrame
         pendingModelFrameTask?.cancel()
-        pendingModelFrameTask = Task { @MainActor [weak self] in
-            let delay = max(delay, 0)
-            if delay > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            }
-
-            guard !Task.isCancelled else { return }
+        pendingModelFrameTask = delayedTaskScheduler.schedule(after: delay) { [weak self] in
+            self?.pendingModelFrameTask = nil
             self?.applyPendingModelFrameIfNeeded()
         }
     }
@@ -163,13 +161,8 @@ final class StickyNoteWindowFrameController {
 
     private func scheduleLocalFramePersistence(after delay: TimeInterval) {
         localFramePersistenceTask?.cancel()
-        localFramePersistenceTask = Task { @MainActor [weak self] in
-            let delay = max(delay, 0)
-            if delay > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            }
-
-            guard !Task.isCancelled else { return }
+        localFramePersistenceTask = delayedTaskScheduler.schedule(after: delay) { [weak self] in
+            self?.localFramePersistenceTask = nil
             self?.completeLocalMoveIfNeeded()
         }
     }

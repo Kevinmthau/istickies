@@ -333,6 +333,159 @@ for (_, window) in windowsToClose {
 
 **Rough implementation scope:** small to medium.
 
+### P2: Delayed task scheduling is duplicated across store, editor, window, and sync code
+
+**Status:** Implemented. Added a shared delayed-task scheduler and cancellable task handle. Store snapshot/cloud-sync delays, editor draft debounce, macOS window frame delays, automatic-sync throttling, and periodic sync scheduling now route through that abstraction. Tests use a manual scheduler for editor debounce, automatic-sync throttling, and window-frame persistence paths.
+
+**Why it matters:** Debounce and delayed retry behavior now appears in several places, each with its own `Task.sleep` and cancellation semantics. The behavior is currently correct enough, but future timing changes will be hard to test without relying on wall-clock sleeps.
+
+**Files/functions involved:**
+
+- `iStickies/Services/StickyNotesStore.swift`
+  - `scheduleSnapshotPersistence(after:)`
+  - `scheduleCloudSync(after:)`
+- `iStickies/Views/NoteDraftSession.swift`
+  - `schedulePersistence()`
+- `iStickies/Platform/macOS/StickyNoteWindowFrameController.swift`
+  - `schedulePendingModelFrame(_:after:)`
+  - `scheduleLocalFramePersistence(after:)`
+- `iStickies/Platform/macOS/MacStickyNotesSyncScheduler.swift`
+  - `StickyNotesAutomaticSyncScheduler`
+  - `startPeriodicSync()`
+
+**Concrete recommendation:** Add a small injectable delayed-task scheduler or clock abstraction for debounced work. Keep the public behavior unchanged, but route sleep/cancel behavior through one helper so tests can drive time deterministically.
+
+**Expected payoff:** Less duplicated concurrency code and less reliance on real sleeps in tests.
+
+**Rough implementation scope:** small to medium.
+
+### P2: Store state can be extracted into a pure reducer
+
+**Status:** Proposed.
+
+**Why it matters:** `StickyNotesStore` is much healthier after sync orchestration and normalized storage work, but it still owns mutation rules, sorting, observation publishing, persistence coalescing, sync execution, and UI-facing APIs. The state mutation rules are mostly pure and would be easier to test outside an `@MainActor` observable object.
+
+**Files/functions involved:**
+
+- `iStickies/Services/StickyNotesStore.swift`
+  - `notesByID`
+  - `orderedNoteIDs`
+  - `pendingDeletionIDs`
+  - `commitStateChange(_:mutation:)`
+  - `mutateNote(id:touchModifiedAt:markNeedsCloudUpload:commitOptions:mutation:)`
+  - `replaceStoredNotes(with:sort:)`
+  - `resortStoredNote(id:)`
+
+**Concrete recommendation:** Introduce a `StickyNotesState` value type that owns ID-indexed notes, ordered IDs, pending deletions, sorting, and pure mutation methods. Keep `StickyNotesStore` responsible for publishing observations, persistence, scheduling, sync execution, and UI commands.
+
+**Expected payoff:** Smaller store surface, simpler tests for ordering and mutation behavior, and clearer separation between data transitions and app side effects.
+
+**Rough implementation scope:** medium.
+
+### P2: Note color behavior should be explicit
+
+**Status:** Proposed.
+
+**Why it matters:** `StickyNoteColor` still contains multiple colors, and `updateColor(id:color:)` accepts a color parameter, but store and sync normalization force notes back to yellow. That may be intentional legacy compatibility, but the API shape suggests color customization still exists.
+
+**Files/functions involved:**
+
+- `iStickies/Models/StickyNoteColor.swift`
+- `iStickies/Services/StickyNotesStore.swift`
+  - `updateColor(id:color:)`
+  - `enforceYellowNotes(_:)`
+- `iStickies/Services/StickyNotesSyncCoordinator.swift`
+  - `enforceYellowNotes(_:)`
+- `iStickies/Services/StickyNoteRecordMapper.swift`
+  - `write(_:to:)`
+
+**Concrete recommendation:** Choose one behavior and encode it deliberately:
+
+1. If notes are now always yellow, remove or deprecate color mutation and document old non-yellow colors as legacy imported state.
+2. If color customization should return, make `updateColor` honor the requested value and define how color sync should work with the production CloudKit schema.
+
+**Expected payoff:** Removes confusing dead API surface and avoids accidental reintroduction of partially supported color sync.
+
+**Rough implementation scope:** small if yellow-only, medium if restoring color sync.
+
+### P2: Unknown CloudKit pending-change cases should not crash the app
+
+**Status:** Proposed.
+
+**Why it matters:** The `CKSyncEngine.PendingRecordZoneChange.recordID` helper uses `fatalError` for unknown future enum cases. A future SDK/runtime case could crash during sync instead of being skipped and logged.
+
+**Files/functions involved:**
+
+- `iStickies/Services/StickyNotesCloudService.swift`
+  - `CKSyncEngine.PendingRecordZoneChange.recordID`
+  - `nextRecordZoneChangeBatch(_:syncEngine:)`
+
+**Concrete recommendation:** Replace the fatal helper with an optional record ID accessor. Filter unsupported pending changes out of the app's custom-zone batch and log a content-free warning if any are skipped.
+
+**Expected payoff:** Better forward compatibility with future CloudKit changes.
+
+**Rough implementation scope:** small.
+
+### P2: Large UI files should be split by responsibility
+
+**Status:** Proposed.
+
+**Why it matters:** The main UI files mix reusable rendering, platform bridges, layout utilities, and scene behavior. They are still workable, but reviewing future UI changes requires scanning more unrelated code than necessary.
+
+**Files/functions involved:**
+
+- `iStickies/Views/NoteEditorView.swift`
+  - `StickyNoteEditor`
+  - `MacStickyTextView`
+  - `IOSStickyTextView`
+  - `StickyNoteTypography`
+  - editor sync/layout helpers
+- `iStickies/Views/NotesDashboardView.swift`
+  - paper/card rendering
+  - mobile scene
+  - sync modifier
+  - dashboard card/editor views
+
+**Concrete recommendation:** Split stable platform bridges and reusable rendering into focused files:
+
+- `StickyNoteTypography.swift`
+- `StickyTextEditorSync.swift`
+- `MacStickyTextView.swift`
+- `IOSStickyTextView.swift`
+- `StickyNotePaperViews.swift`
+- `StickyNoteCardViews.swift`
+- `MobileNotesSceneView.swift`
+
+**Expected payoff:** Smaller review surface for UI changes and cleaner platform-specific ownership.
+
+**Rough implementation scope:** small to medium.
+
+### P2: Unit tests should be split into topical files
+
+**Status:** Proposed.
+
+**Why it matters:** `iStickiesTests/iStickiesTests.swift` is now the main regression suite, but it has grown into one large file with all domains plus test doubles. The coverage is useful; the organization is the problem.
+
+**Files/functions involved:**
+
+- `iStickiesTests/iStickiesTests.swift`
+- test doubles near the bottom of the file, including `MockCloudService`
+
+**Concrete recommendation:** Split tests into topical files while keeping behavior unchanged:
+
+- `StickyNotesStoreTests.swift`
+- `StickyNotesSyncTests.swift`
+- `CloudKitMappingTests.swift`
+- `NoteDraftSessionTests.swift`
+- `StickyTextEditorTests.swift`
+- `MacWindowFrameTests.swift`
+- `StickyNoteLayoutTests.swift`
+- `TestSupport/MockCloudService.swift`
+
+**Expected payoff:** Faster navigation and easier targeted test additions.
+
+**Rough implementation scope:** small.
+
 ## Refactor plan
 
 ### Stage 1: Lock down sync safety
@@ -412,6 +565,21 @@ Completed work:
 
 Remaining follow-up: optional only. Removing the compatibility snapshot would be a cleanup, not a current performance blocker. Remaining broad store observation is limited to app ownership and macOS lifecycle Combine subscriptions.
 
+### Stage 6: Next refactor cleanup
+
+Status: item 1 complete; remaining cleanup items proposed.
+
+Recommended order:
+
+1. Centralize delayed scheduling and make timing-heavy tests deterministic - complete.
+2. Replace the CloudKit unknown pending-change `fatalError` with a logged skip path.
+3. Extract `StickyNotesState` from `StickyNotesStore`.
+4. Decide whether note color is yellow-only legacy behavior or a supported customization feature.
+5. Split `NoteEditorView.swift` and `NotesDashboardView.swift` into focused platform/rendering files.
+6. Split `iStickiesTests.swift` into topical test files and move mocks into test support.
+
+Keep these cleanup steps behavior-preserving unless the color decision explicitly changes product behavior.
+
 ## Performance plan
 
 ### Quick wins
@@ -468,4 +636,4 @@ Remaining follow-up: optional only. Removing the compatibility snapshot would be
 
 ## Best next implementation prompt
 
-Run the new UI tests on a machine with macOS UI-test signing available, then continue with optional cleanup such as removing the remaining compatibility `store.notes` snapshot or adding a richer persistent CloudKit account troubleshooting view.
+Implement Stage 6 item 2: replace the CloudKit unknown pending-change `fatalError` with an optional record ID accessor, skip unsupported custom-zone pending changes with a content-free log warning, and add focused tests for the skip path. Keep behavior unchanged for known save/delete cases and run the preferred macOS unit-test pass before finishing.

@@ -5,6 +5,7 @@ final class NoteDraftSession: ObservableObject {
     @Published private(set) var draftContent = ""
 
     private let debounceInterval: Duration
+    private let delayedTaskScheduler: any StickyNotesDelayedTaskScheduling
     private var noteID: String?
     private var hasLoadedDraft = false
     private var hasPendingLocalChanges = false
@@ -12,10 +13,14 @@ final class NoteDraftSession: ObservableObject {
     private var draftBaseContent: String?
     private var readPersistedContent: @MainActor () -> String? = { nil }
     private var persistDraftContent: @MainActor (String, String) -> StickyNoteDraftPersistenceResult = { _, _ in .missing }
-    private var saveTask: Task<Void, Never>?
+    private var saveTask: StickyNotesDelayedTask?
 
-    init(debounceInterval: Duration = .milliseconds(250)) {
+    init(
+        debounceInterval: Duration = .milliseconds(250),
+        delayedTaskScheduler: any StickyNotesDelayedTaskScheduling = StickyNotesLiveDelayedTaskScheduler()
+    ) {
         self.debounceInterval = debounceInterval
+        self.delayedTaskScheduler = delayedTaskScheduler
     }
 
     deinit {
@@ -94,11 +99,9 @@ final class NoteDraftSession: ObservableObject {
         }
         hasPendingLocalChanges = persistedContent != draftContent
         saveTask?.cancel()
-        saveTask = Task { @MainActor [weak self] in
+        saveTask = delayedTaskScheduler.schedule(after: debounceInterval) { [weak self] in
             guard let self else { return }
-
-            try? await Task.sleep(for: self.debounceInterval)
-            guard !Task.isCancelled else { return }
+            self.saveTask = nil
             self.persistDraftIfNeeded(self.draftContent)
         }
     }

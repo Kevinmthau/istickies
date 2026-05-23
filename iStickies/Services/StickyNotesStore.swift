@@ -82,12 +82,13 @@ final class StickyNotesStore: ObservableObject {
     private let fileStore: StickyNotesFileStore
     private let cloudService: any StickyNotesCloudSyncing
     private let syncCoordinator: StickyNotesSyncCoordinator
+    private let delayedTaskScheduler: any StickyNotesDelayedTaskScheduling
     private var pendingDeletionIDs: Set<String> = []
     private var hasStartedLoading = false
     private var hasLoaded = false
     private var isSynchronizing = false
-    private var scheduledSyncTask: Task<Void, Never>?
-    private var scheduledPersistenceTask: Task<Void, Never>?
+    private var scheduledSyncTask: StickyNotesDelayedTask?
+    private var scheduledPersistenceTask: StickyNotesDelayedTask?
     private var persistenceTask: Task<Void, Never>?
     private var snapshotGeneration = 0
     private var cachedCloudPersistedState = StickyNotesCloudPersistedState()
@@ -99,10 +100,12 @@ final class StickyNotesStore: ObservableObject {
     init(
         fileStore: StickyNotesFileStore = StickyNotesFileStore(),
         cloudService: any StickyNotesCloudSyncing = StickyNotesCloudServiceFactory.makeDefaultService(),
+        delayedTaskScheduler: any StickyNotesDelayedTaskScheduling = StickyNotesLiveDelayedTaskScheduler(),
         autoLoad: Bool = true
     ) {
         self.fileStore = fileStore
         self.cloudService = cloudService
+        self.delayedTaskScheduler = delayedTaskScheduler
         syncCoordinator = StickyNotesSyncCoordinator(cloudService: cloudService)
 
         if autoLoad {
@@ -715,16 +718,10 @@ final class StickyNotesStore: ObservableObject {
         }
 
         scheduledPersistenceTask?.cancel()
-        scheduledPersistenceTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            } catch {
-                return
-            }
-
-            guard !Task.isCancelled else { return }
-            self?.scheduledPersistenceTask = nil
-            self?.persistSnapshotNow()
+        scheduledPersistenceTask = delayedTaskScheduler.schedule(after: delay) { [weak self] in
+            guard let self else { return }
+            self.scheduledPersistenceTask = nil
+            self.persistSnapshotNow()
         }
     }
 
@@ -823,13 +820,10 @@ final class StickyNotesStore: ObservableObject {
 
     private func scheduleCloudSync(after delay: TimeInterval = stickyNotesDefaultCloudSyncDelay) {
         scheduledSyncTask?.cancel()
-        scheduledSyncTask = Task { [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            } catch {
-                return
-            }
-            await self?.syncNow()
+        scheduledSyncTask = delayedTaskScheduler.schedule(after: delay) { [weak self] in
+            guard let self else { return }
+            self.scheduledSyncTask = nil
+            await self.syncNow()
         }
     }
 }

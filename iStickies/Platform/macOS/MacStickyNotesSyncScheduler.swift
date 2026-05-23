@@ -4,46 +4,28 @@ import Foundation
 import Network
 
 @MainActor
-struct StickyNotesAutomaticSyncScheduledTask {
-    private let cancellation: @MainActor () -> Void
-
-    init(cancel: @escaping @MainActor () -> Void) {
-        cancellation = cancel
-    }
-
-    func cancel() {
-        cancellation()
-    }
-}
-
-@MainActor
 final class StickyNotesAutomaticSyncScheduler {
     typealias SyncOperation = @MainActor (StickyNotesAutomaticSyncReason) async -> Void
-    typealias DelayedOperationScheduler = @MainActor (
-        _ delay: TimeInterval,
-        _ operation: @escaping @MainActor () async -> Void
-    ) -> StickyNotesAutomaticSyncScheduledTask
 
     private let minimumSyncInterval: TimeInterval
     private let now: () -> Date
-    private let scheduleDelayedOperation: DelayedOperationScheduler
+    private let delayedTaskScheduler: any StickyNotesDelayedTaskScheduling
     private let syncOperation: SyncOperation
 
     private var lastSyncDate: Date?
     private var isSyncInFlight = false
     private var pendingReason: StickyNotesAutomaticSyncReason?
-    private var pendingSyncTask: StickyNotesAutomaticSyncScheduledTask?
+    private var pendingSyncTask: StickyNotesDelayedTask?
 
     init(
         minimumSyncInterval: TimeInterval = 10,
         now: @escaping () -> Date = Date.init,
-        scheduleDelayedOperation: @escaping DelayedOperationScheduler = StickyNotesAutomaticSyncScheduler
-            .scheduleDelayedOperation,
+        delayedTaskScheduler: any StickyNotesDelayedTaskScheduling = StickyNotesLiveDelayedTaskScheduler(),
         syncOperation: @escaping SyncOperation
     ) {
         self.minimumSyncInterval = minimumSyncInterval
         self.now = now
-        self.scheduleDelayedOperation = scheduleDelayedOperation
+        self.delayedTaskScheduler = delayedTaskScheduler
         self.syncOperation = syncOperation
     }
 
@@ -57,7 +39,7 @@ final class StickyNotesAutomaticSyncScheduler {
                 guard pendingSyncTask == nil else { return }
 
                 let delay = max(0, minimumSyncInterval - elapsed)
-                pendingSyncTask = scheduleDelayedOperation(delay) { [weak self] in
+                pendingSyncTask = delayedTaskScheduler.schedule(after: delay) { [weak self] in
                     await self?.runDeferredSync()
                 }
                 return
@@ -108,7 +90,7 @@ final class StickyNotesAutomaticSyncScheduler {
                 guard pendingSyncTask == nil else { return }
 
                 let delay = max(0, minimumSyncInterval - elapsed)
-                pendingSyncTask = scheduleDelayedOperation(delay) { [weak self] in
+                pendingSyncTask = delayedTaskScheduler.schedule(after: delay) { [weak self] in
                     await self?.runDeferredSync()
                 }
                 return
@@ -119,30 +101,6 @@ final class StickyNotesAutomaticSyncScheduler {
         pendingSyncTask = nil
         pendingReason = nil
         await runSync(reason: reason, at: currentDate)
-    }
-
-    private static func scheduleDelayedOperation(
-        after delay: TimeInterval,
-        operation: @escaping @MainActor () async -> Void
-    ) -> StickyNotesAutomaticSyncScheduledTask {
-        let task = Task { @MainActor in
-            do {
-                try await Task.sleep(nanoseconds: nanoseconds(for: delay))
-            } catch {
-                return
-            }
-
-            guard !Task.isCancelled else { return }
-            await operation()
-        }
-
-        return StickyNotesAutomaticSyncScheduledTask {
-            task.cancel()
-        }
-    }
-
-    private static func nanoseconds(for delay: TimeInterval) -> UInt64 {
-        UInt64(max(0, delay) * 1_000_000_000)
     }
 }
 
@@ -159,9 +117,10 @@ final class MacStickyNotesSyncScheduler {
     private let pathMonitor: NWPathMonitor
     private let pathMonitorQueue = DispatchQueue(label: "com.mushpot.iStickies.background-sync.path-monitor")
     private let periodicSyncInterval: TimeInterval
+    private let delayedTaskScheduler: any StickyNotesDelayedTaskScheduling
 
     private var notificationObservations: [NotificationObservation] = []
-    private var periodicSyncTask: Task<Void, Never>?
+    private var periodicSyncTask: StickyNotesDelayedTask?
     private var latestPathStatus: NWPath.Status?
     private var isStarted = false
 
@@ -171,10 +130,12 @@ final class MacStickyNotesSyncScheduler {
         periodicSyncInterval: TimeInterval = 60,
         notificationCenter: NotificationCenter = .default,
         workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
-        pathMonitor: NWPathMonitor = NWPathMonitor()
+        pathMonitor: NWPathMonitor = NWPathMonitor(),
+        delayedTaskScheduler: any StickyNotesDelayedTaskScheduling = StickyNotesLiveDelayedTaskScheduler()
     ) {
         self.automaticSyncScheduler = StickyNotesAutomaticSyncScheduler(
-            minimumSyncInterval: minimumSyncInterval
+            minimumSyncInterval: minimumSyncInterval,
+            delayedTaskScheduler: delayedTaskScheduler
         ) { [weak store] reason in
             await store?.syncAutomatically(reason: reason)
         }
@@ -182,6 +143,7 @@ final class MacStickyNotesSyncScheduler {
         self.notificationCenter = notificationCenter
         self.workspaceNotificationCenter = workspaceNotificationCenter
         self.pathMonitor = pathMonitor
+        self.delayedTaskScheduler = delayedTaskScheduler
     }
 
     func start() {
@@ -243,19 +205,11 @@ final class MacStickyNotesSyncScheduler {
     }
 
     private func startPeriodicSync() {
-        periodicSyncTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: Self.nanoseconds(for: periodicSyncInterval))
-                } catch {
-                    return
-                }
-
-                guard !Task.isCancelled else { return }
-                await requestSync(reason: .periodicPoll)
-            }
+        periodicSyncTask = delayedTaskScheduler.schedule(after: periodicSyncInterval) { [weak self] in
+            guard let self, self.isStarted else { return }
+            await self.requestSync(reason: .periodicPoll)
+            guard self.isStarted else { return }
+            self.startPeriodicSync()
         }
     }
 
@@ -274,10 +228,6 @@ final class MacStickyNotesSyncScheduler {
 
     private func requestSync(reason: StickyNotesAutomaticSyncReason) async {
         await automaticSyncScheduler.requestSync(reason: reason)
-    }
-
-    private static func nanoseconds(for interval: TimeInterval) -> UInt64 {
-        UInt64(max(0, interval) * 1_000_000_000)
     }
 }
 #endif
