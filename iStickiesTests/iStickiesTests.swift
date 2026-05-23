@@ -834,6 +834,55 @@ struct iStickiesTests {
         )
     }
 
+    @Test func cloudKitPendingChangeFilterKeepsKnownCustomZoneSavesAndDeletes() {
+        let targetZoneID = CKRecordZone.ID(zoneName: "StickyNotes")
+        let otherZoneID = CKRecordZone.ID(zoneName: "Other")
+        let saveRecordID = CKRecord.ID(recordName: "save-note", zoneID: targetZoneID)
+        let deleteRecordID = CKRecord.ID(recordName: "delete-note", zoneID: targetZoneID)
+        let otherZoneRecordID = CKRecord.ID(recordName: "other-zone-note", zoneID: otherZoneID)
+
+        let result = CloudKitPendingRecordZoneChangeFilter.customZoneChanges(
+            from: [
+                .saveRecord(saveRecordID),
+                .deleteRecord(deleteRecordID),
+                .saveRecord(otherZoneRecordID),
+            ],
+            targetZoneID: targetZoneID,
+            shouldInclude: { _ in true }
+        )
+
+        let includedRecordNames = result.changes.compactMap {
+            CloudKitPendingRecordZoneChangeFilter.recordID(for: $0)?.recordName
+        }
+        #expect(includedRecordNames == ["save-note", "delete-note"])
+        #expect(result.skippedUnsupportedCount == 0)
+    }
+
+    @Test func cloudKitPendingChangeFilterSkipsUnsupportedScopedChanges() {
+        let targetZoneID = CKRecordZone.ID(zoneName: "StickyNotes")
+        let supportedRecordID = CKRecord.ID(recordName: "supported-note", zoneID: targetZoneID)
+        let unsupportedRecordID = CKRecord.ID(recordName: "unsupported-note", zoneID: targetZoneID)
+
+        let result = CloudKitPendingRecordZoneChangeFilter.customZoneChanges(
+            from: [
+                .saveRecord(supportedRecordID),
+                .deleteRecord(unsupportedRecordID),
+            ],
+            targetZoneID: targetZoneID,
+            shouldInclude: { _ in true },
+            recordID: { pendingChange in
+                let recordID = CloudKitPendingRecordZoneChangeFilter.recordID(for: pendingChange)
+                return recordID?.recordName == unsupportedRecordID.recordName ? nil : recordID
+            }
+        )
+
+        let includedRecordNames = result.changes.compactMap {
+            CloudKitPendingRecordZoneChangeFilter.recordID(for: $0)?.recordName
+        }
+        #expect(includedRecordNames == ["supported-note"])
+        #expect(result.skippedUnsupportedCount == 1)
+    }
+
     @Test func cloudKitErrorClassifierDetectsMissingZoneErrors() {
         let zoneNotFound = makeCloudKitError(.zoneNotFound)
         let userDeletedZone = makeCloudKitError(.userDeletedZone)

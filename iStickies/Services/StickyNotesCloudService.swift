@@ -1002,13 +1002,23 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
-        let pendingChanges = syncEngine.state.pendingRecordZoneChanges.filter { pendingChange in
-            context.options.scope.contains(pendingChange)
-                && pendingChange.recordID.zoneID == StickyNotesCloudKitConfig.zoneID
+        let pendingChanges = CloudKitPendingRecordZoneChangeFilter.customZoneChanges(
+            from: syncEngine.state.pendingRecordZoneChanges,
+            targetZoneID: StickyNotesCloudKitConfig.zoneID,
+            shouldInclude: { context.options.scope.contains($0) }
+        )
+
+        if pendingChanges.skippedUnsupportedCount > 0 {
+            StickyNotesLog.cloudKit.warning(
+                """
+                Skipped unsupported CloudKit pending record-zone changes \
+                count: \(pendingChanges.skippedUnsupportedCount, privacy: .public)
+                """
+            )
         }
 
         return await CKSyncEngine.RecordZoneChangeBatch(
-            pendingChanges: pendingChanges,
+            pendingChanges: pendingChanges.changes,
             recordProvider: { [weak self] recordID in
                 guard let self else { return nil }
                 return await self.recordProvider(for: recordID)
@@ -1106,13 +1116,59 @@ enum CloudKitLegacyDefaultZoneImportPolicy {
     }
 }
 
-private extension CKSyncEngine.PendingRecordZoneChange {
-    var recordID: CKRecord.ID {
-        switch self {
+struct CloudKitPendingRecordZoneChangeFilterResult {
+    var changes: [CKSyncEngine.PendingRecordZoneChange]
+    var skippedUnsupportedCount: Int
+}
+
+enum CloudKitPendingRecordZoneChangeFilter {
+    static func customZoneChanges(
+        from pendingChanges: [CKSyncEngine.PendingRecordZoneChange],
+        targetZoneID: CKRecordZone.ID,
+        shouldInclude: (CKSyncEngine.PendingRecordZoneChange) -> Bool
+    ) -> CloudKitPendingRecordZoneChangeFilterResult {
+        customZoneChanges(
+            from: pendingChanges,
+            targetZoneID: targetZoneID,
+            shouldInclude: shouldInclude,
+            recordID: recordID(for:)
+        )
+    }
+
+    static func customZoneChanges(
+        from pendingChanges: [CKSyncEngine.PendingRecordZoneChange],
+        targetZoneID: CKRecordZone.ID,
+        shouldInclude: (CKSyncEngine.PendingRecordZoneChange) -> Bool,
+        recordID: (CKSyncEngine.PendingRecordZoneChange) -> CKRecord.ID?
+    ) -> CloudKitPendingRecordZoneChangeFilterResult {
+        var filteredChanges: [CKSyncEngine.PendingRecordZoneChange] = []
+        var skippedUnsupportedCount = 0
+
+        for pendingChange in pendingChanges where shouldInclude(pendingChange) {
+            guard let pendingRecordID = recordID(pendingChange) else {
+                skippedUnsupportedCount += 1
+                continue
+            }
+
+            guard pendingRecordID.zoneID == targetZoneID else {
+                continue
+            }
+
+            filteredChanges.append(pendingChange)
+        }
+
+        return CloudKitPendingRecordZoneChangeFilterResult(
+            changes: filteredChanges,
+            skippedUnsupportedCount: skippedUnsupportedCount
+        )
+    }
+
+    static func recordID(for pendingChange: CKSyncEngine.PendingRecordZoneChange) -> CKRecord.ID? {
+        switch pendingChange {
         case let .saveRecord(recordID), let .deleteRecord(recordID):
             return recordID
         @unknown default:
-            fatalError("Unhandled CKSyncEngine.PendingRecordZoneChange case")
+            return nil
         }
     }
 }

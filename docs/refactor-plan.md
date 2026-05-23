@@ -410,14 +410,14 @@ for (_, window) in windowsToClose {
 
 ### P2: Unknown CloudKit pending-change cases should not crash the app
 
-**Status:** Proposed.
+**Status:** Implemented. The pending-change record ID helper now returns an optional, unsupported/future pending-change cases are skipped from the custom-zone send batch with a content-free CloudKit warning, and tests cover both known save/delete filtering and the unsupported skip path.
 
-**Why it matters:** The `CKSyncEngine.PendingRecordZoneChange.recordID` helper uses `fatalError` for unknown future enum cases. A future SDK/runtime case could crash during sync instead of being skipped and logged.
+**Why it mattered:** The `CKSyncEngine.PendingRecordZoneChange` record ID helper used `fatalError` for unknown future enum cases. A future SDK/runtime case could have crashed during sync instead of being skipped and logged.
 
 **Files/functions involved:**
 
 - `iStickies/Services/StickyNotesCloudService.swift`
-  - `CKSyncEngine.PendingRecordZoneChange.recordID`
+  - `CloudKitPendingRecordZoneChangeFilter.recordID(for:)`
   - `nextRecordZoneChangeBatch(_:syncEngine:)`
 
 **Concrete recommendation:** Replace the fatal helper with an optional record ID accessor. Filter unsupported pending changes out of the app's custom-zone batch and log a content-free warning if any are skipped.
@@ -567,12 +567,12 @@ Remaining follow-up: optional only. Removing the compatibility snapshot would be
 
 ### Stage 6: Next refactor cleanup
 
-Status: item 1 complete; remaining cleanup items proposed.
+Status: items 1 and 2 complete; remaining cleanup items proposed.
 
 Recommended order:
 
 1. Centralize delayed scheduling and make timing-heavy tests deterministic - complete.
-2. Replace the CloudKit unknown pending-change `fatalError` with a logged skip path.
+2. Replace the CloudKit unknown pending-change `fatalError` with a logged skip path - complete.
 3. Extract `StickyNotesState` from `StickyNotesStore`.
 4. Decide whether note color is yellow-only legacy behavior or a supported customization feature.
 5. Split `NoteEditorView.swift` and `NotesDashboardView.swift` into focused platform/rendering files.
@@ -636,4 +636,4 @@ Keep these cleanup steps behavior-preserving unless the color decision explicitl
 
 ## Best next implementation prompt
 
-Implement Stage 6 item 2: replace the CloudKit unknown pending-change `fatalError` with an optional record ID accessor, skip unsupported custom-zone pending changes with a content-free log warning, and add focused tests for the skip path. Keep behavior unchanged for known save/delete cases and run the preferred macOS unit-test pass before finishing.
+Implement Stage 6 item 3: extract a `StickyNotesState` value type from `StickyNotesStore` to own ID-indexed notes, ordered note IDs, pending deletions, sorting, and pure mutation helpers. Keep `StickyNotesStore` responsible for publishing observations, persistence, scheduling, sync execution, and UI commands. Keep behavior unchanged and run the preferred macOS unit-test pass before finishing.
