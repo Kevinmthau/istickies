@@ -483,6 +483,46 @@ struct iStickiesTests {
         #expect(CloudRemoteSnapshotCompleteness.remoteReset("reset").observabilityName == "remoteReset")
     }
 
+    @Test func cloudKitRemoteNoteCacheStoresOnlyCleanNotes() throws {
+        let dirtyRemoteNote = StickyNote(
+            id: "remote-note",
+            content: "Remote content",
+            needsCloudUpload: true,
+            cloudKitSystemFieldsData: Data([1]),
+            cloudRevision: "server-revision"
+        )
+        let cache = CloudKitRemoteNoteCache(notes: [dirtyRemoteNote])
+
+        let cachedNote = try #require(cache.note(withID: dirtyRemoteNote.id))
+        let snapshotNote = try #require(cache.snapshot(completeness: .partial("Partial fetch")).notes.first)
+
+        #expect(cachedNote.needsCloudUpload == false)
+        #expect(cachedNote.cloudKitSystemFieldsData == Data([1]))
+        #expect(cachedNote.cloudRevision == "server-revision")
+        #expect(snapshotNote.needsCloudUpload == false)
+        #expect(cache.snapshot(completeness: .partial("Partial fetch")).completeness == .partial("Partial fetch"))
+    }
+
+    @Test func cloudKitRemoteNoteCacheReplacesUpsertsAndRemovesByID() throws {
+        let firstNote = StickyNote(id: "first-note", content: "First", needsCloudUpload: false)
+        let secondNote = StickyNote(id: "second-note", content: "Second", needsCloudUpload: false)
+        let editedFirstNote = StickyNote(id: "first-note", content: "Edited first", needsCloudUpload: true)
+        var cache = CloudKitRemoteNoteCache(notes: [firstNote, secondNote])
+
+        cache.upsert(editedFirstNote)
+        cache.remove(noteID: secondNote.id)
+
+        let cachedFirstNote = try #require(cache.note(withID: firstNote.id))
+        #expect(cachedFirstNote.content == "Edited first")
+        #expect(cachedFirstNote.needsCloudUpload == false)
+        #expect(cache.note(withID: secondNote.id) == nil)
+        #expect(cache.count == 1)
+
+        cache.replaceAll(with: [secondNote])
+        #expect(cache.note(withID: firstNote.id) == nil)
+        #expect(cache.note(withID: secondNote.id)?.content == "Second")
+    }
+
     @Test func sameAccountRemoteResetReuploadsCleanLocalNotes() async throws {
         let fileURL = temporaryStoreURL()
         let fileStore = StickyNotesFileStore(fileURL: fileURL)

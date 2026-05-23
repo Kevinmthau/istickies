@@ -126,7 +126,7 @@ If persisted content changed since the draft base and differs from the draft, th
 - `CloudKitSendBatchTracker`: owns active send-batch state, saved/deleted/conflict/retry bookkeeping, and result finalization.
 - `CloudKitErrorClassifier`: maps CloudKit errors into retry, conflict, missing zone, partial failure, and terminal failure categories.
 
-Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch tracking has been extracted into `CloudKitSendBatchTracker`, including active batch state, save/delete/conflict/retry bookkeeping, result finalization, and focused unit tests. CloudKit error interpretation has been extracted into `CloudKitErrorClassifier`, covering missing-zone checks, sent-record save/delete outcomes, unknown-item retry handling, partial-failure recovery, and terminal failures. Sync orchestration has also been extracted into `StickyNotesSyncCoordinator`. Continue with the larger CloudKit service split after the remaining smaller production-readiness work is handled.
+Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch tracking has been extracted into `CloudKitSendBatchTracker`, including active batch state, save/delete/conflict/retry bookkeeping, result finalization, and focused unit tests. CloudKit error interpretation has been extracted into `CloudKitErrorClassifier`, covering missing-zone checks, sent-record save/delete outcomes, unknown-item retry handling, partial-failure recovery, and terminal failures. Remote-note cache storage has been extracted into `CloudKitRemoteNoteCache`, keeping persisted/fetched remote notes normalized as clean snapshots outside the CloudKit service. Sync orchestration has also been extracted into `StickyNotesSyncCoordinator`. Continue with the larger CloudKit service split after the remaining smaller production-readiness work is handled.
 
 **Expected payoff:** Smaller review surface, better tests, and safer changes to sync behavior.
 
@@ -370,6 +370,7 @@ Extract low-risk components from `StickyNotesCloudService.swift` without changin
 1. `StickyNoteRecordMapper` - complete.
 2. `CloudKitSendBatchTracker` - complete.
 3. `CloudKitErrorClassifier` - complete.
+4. `CloudKitRemoteNoteCache` - complete.
 
 These components can be unit-tested without live CloudKit and will make the later sync fixes easier to review.
 
