@@ -606,7 +606,16 @@ private struct StickyNotesSyncModifier: ViewModifier {
 
 #if !os(macOS)
 private struct AddStickyNoteButton: View {
+    @Environment(\.colorScheme) private var colorScheme
     let action: () -> Void
+
+    private var ambientShadowOpacity: Double {
+        colorScheme == .dark ? 0.55 : 0.16
+    }
+
+    private var contactShadowOpacity: Double {
+        colorScheme == .dark ? 0.25 : 0.07
+    }
 
     var body: some View {
         Button(action: action) {
@@ -621,8 +630,8 @@ private struct AddStickyNoteButton: View {
                             Circle()
                                 .stroke(Color.primary.opacity(0.08), lineWidth: 0.7)
                         }
-                        .shadow(color: .black.opacity(0.16), radius: 18, x: 0, y: 10)
-                        .shadow(color: .black.opacity(0.07), radius: 4, x: 0, y: 2)
+                        .shadow(color: .black.opacity(ambientShadowOpacity), radius: 18, x: 0, y: 10)
+                        .shadow(color: .black.opacity(contactShadowOpacity), radius: 4, x: 0, y: 2)
                 }
                 .contentShape(Circle())
         }
