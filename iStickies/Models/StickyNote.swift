@@ -84,6 +84,27 @@ struct StickyNote: Identifiable, Codable, Equatable, Sendable {
         copy.cloudRevision = nil
         return copy
     }
+
+    static func enforcingYellow(_ notes: [StickyNote]) -> [StickyNote] {
+        notes.map { note in
+            guard note.color != .yellow else { return note }
+
+            var copy = note
+            copy.color = .yellow
+            copy.needsCloudUpload = true
+            return copy
+        }
+    }
+}
+
+enum StickyNoteOrdering {
+    static func areInIncreasingOrder(_ lhs: StickyNote, _ rhs: StickyNote) -> Bool {
+        if lhs.lastModified != rhs.lastModified {
+            return lhs.lastModified > rhs.lastModified
+        }
+
+        return lhs.createdAt > rhs.createdAt
+    }
 }
 
 struct StickyNotesSnapshot: Codable, Sendable {

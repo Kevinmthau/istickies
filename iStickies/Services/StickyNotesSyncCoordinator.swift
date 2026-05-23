@@ -60,7 +60,7 @@ struct StickyNotesSyncCoordinator: Sendable {
             remoteSnapshotCompleteness: remoteSnapshot.completeness
         )
 
-        var mergedNotes = enforceYellowNotes(mergeOutcome.notes)
+        var mergedNotes = StickyNote.enforcingYellow(mergeOutcome.notes)
         var pendingDeletionIDs = localState.pendingDeletionIDs
 
         if remoteSnapshot.completeness.shouldReuploadLocalNotes {
@@ -138,7 +138,7 @@ struct StickyNotesSyncCoordinator: Sendable {
 
         return StickyNotesSyncApplicationTransition(
             state: StickyNotesSyncLocalState(
-                notes: enforceYellowNotes(syncOutcome.notes),
+                notes: StickyNote.enforcingYellow(syncOutcome.notes),
                 pendingDeletionIDs: syncOutcome.pendingDeletionIDs
             ),
             syncResult: syncResult
@@ -204,17 +204,6 @@ struct StickyNotesSyncCoordinator: Sendable {
     private func resetCloudStateForRemoteReset(_ notes: [StickyNote]) -> [StickyNote] {
         notes.map { note in
             note.resettingCloudKitSystemFields()
-        }
-    }
-
-    private func enforceYellowNotes(_ notes: [StickyNote]) -> [StickyNote] {
-        notes.map { note in
-            guard note.color != .yellow else { return note }
-
-            var copy = note
-            copy.color = .yellow
-            copy.needsCloudUpload = true
-            return copy
         }
     }
 }

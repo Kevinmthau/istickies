@@ -29,12 +29,16 @@ final class StickyNotesListObservation: ObservableObject {
     }
 
     func update(noteIDs: [String], openNoteIDs: [String]) {
-        if self.noteIDs != noteIDs {
-            self.noteIDs = noteIDs
-        }
+        assignIfChanged(noteIDs, to: \.noteIDs)
+        assignIfChanged(openNoteIDs, to: \.openNoteIDs)
+    }
 
-        if self.openNoteIDs != openNoteIDs {
-            self.openNoteIDs = openNoteIDs
+    private func assignIfChanged<Value: Equatable>(
+        _ newValue: Value,
+        to keyPath: ReferenceWritableKeyPath<StickyNotesListObservation, Value>
+    ) {
+        if self[keyPath: keyPath] != newValue {
+            self[keyPath: keyPath] = newValue
         }
     }
 }
@@ -68,24 +72,19 @@ final class StickyNotesStatusObservation: ObservableObject {
         lastErrorMessage: String?,
         localRecoveryIssue: StickyNotesLocalRecoveryIssue?
     ) {
-        if self.syncState != syncState {
-            self.syncState = syncState
-        }
+        assignIfChanged(syncState, to: \.syncState)
+        assignIfChanged(lastSuccessfulCloudSync, to: \.lastSuccessfulCloudSync)
+        assignIfChanged(hasFinishedInitialLoad, to: \.hasFinishedInitialLoad)
+        assignIfChanged(lastErrorMessage, to: \.lastErrorMessage)
+        assignIfChanged(localRecoveryIssue, to: \.localRecoveryIssue)
+    }
 
-        if self.lastSuccessfulCloudSync != lastSuccessfulCloudSync {
-            self.lastSuccessfulCloudSync = lastSuccessfulCloudSync
-        }
-
-        if self.hasFinishedInitialLoad != hasFinishedInitialLoad {
-            self.hasFinishedInitialLoad = hasFinishedInitialLoad
-        }
-
-        if self.lastErrorMessage != lastErrorMessage {
-            self.lastErrorMessage = lastErrorMessage
-        }
-
-        if self.localRecoveryIssue != localRecoveryIssue {
-            self.localRecoveryIssue = localRecoveryIssue
+    private func assignIfChanged<Value: Equatable>(
+        _ newValue: Value,
+        to keyPath: ReferenceWritableKeyPath<StickyNotesStatusObservation, Value>
+    ) {
+        if self[keyPath: keyPath] != newValue {
+            self[keyPath: keyPath] = newValue
         }
     }
 }
