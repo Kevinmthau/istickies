@@ -4,13 +4,13 @@ import UIKit
 #endif
 
 enum StickyNoteCardLayout {
-    static let gridSpacing: CGFloat = 16
-    static let outerPadding: CGFloat = 20
+    static let gridSpacing: CGFloat = 8
+    static let outerPadding: CGFloat = 14
     static let topPadding: CGFloat = 28
     static let bottomPadding: CGFloat = 96
-    static let contentPadding: CGFloat = 14
+    static let contentPadding: CGFloat = 10
     static let cornerRadius: CGFloat = 8
-    static let height: CGFloat = 148
+    static let height: CGFloat = 164
 
     static var gridPadding: EdgeInsets {
         EdgeInsets(

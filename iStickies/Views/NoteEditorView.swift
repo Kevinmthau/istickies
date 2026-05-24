@@ -174,7 +174,7 @@ private struct StickyNoteEditorContent: View {
     private func editor(for note: StickyNote) -> some View {
 #if os(macOS)
         MacStickyTextView(text: draftContentBinding)
-            .padding(14)
+            .padding(10)
 #else
         IOSStickyTextView(
             text: draftContentBinding,
@@ -347,7 +347,7 @@ private struct NoteEditorContent: View {
 private struct MacStickyTextView: NSViewRepresentable {
     @Binding var text: String
 
-    private static let minimumVerticalInset: CGFloat = 18
+    private static let minimumVerticalInset: CGFloat = 12
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
@@ -502,8 +502,8 @@ private struct MacStickyTextView: NSViewRepresentable {
 }
 #elseif os(iOS)
 private final class CenteredStickyTextView: UITextView {
-    static let minimumVerticalInset: CGFloat = 18
-    static let horizontalInset: CGFloat = 16
+    static let minimumVerticalInset: CGFloat = 12
+    static let horizontalInset: CGFloat = 10
 
     override func layoutSubviews() {
         super.layoutSubviews()

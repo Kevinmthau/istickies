@@ -2242,7 +2242,7 @@ struct iStickiesTests {
         let verticalInset = StickyTextEditorLayout.centeredVerticalInset(
             availableHeight: 400,
             contentHeight: 28,
-            minimumVerticalInset: 18
+            minimumVerticalInset: 12
         )
 
         #expect(verticalInset == 186)
@@ -2252,16 +2252,16 @@ struct iStickiesTests {
         let verticalInset = StickyTextEditorLayout.centeredVerticalInset(
             availableHeight: 140,
             contentHeight: 120,
-            minimumVerticalInset: 18
+            minimumVerticalInset: 12
         )
 
-        #expect(verticalInset == 18)
+        #expect(verticalInset == 12)
     }
 
     @Test func stickyNoteCardLayoutMatchesDashboardGridWidth() {
         let cardWidth = StickyNoteCardLayout.cardWidth(for: 390)
 
-        #expect(cardWidth == 167)
+        #expect(cardWidth == 177)
     }
 
     @Test func stickyNotePaperHitRegionExcludesTransparentCurlCorner() {
