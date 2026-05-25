@@ -2264,10 +2264,11 @@ struct iStickiesTests {
         #expect(cardWidth == 177)
     }
 
-    @Test func stickyNotePaperHitRegionExcludesTransparentCurlCorner() {
+    @Test func stickyNotePaperHitRegionUsesRoundedPaperShape() {
         let rect = CGRect(x: 0, y: 0, width: 280, height: 280)
 
         #expect(StickyNotePaperHitRegion.contains(CGPoint(x: 140, y: 140), in: rect))
+        #expect(StickyNotePaperHitRegion.contains(CGPoint(x: 272, y: 272), in: rect))
         #expect(!StickyNotePaperHitRegion.contains(CGPoint(x: 279, y: 279), in: rect))
     }
 
