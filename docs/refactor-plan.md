@@ -384,29 +384,27 @@ for (_, window) in windowsToClose {
 
 ### P2: Note color behavior should be explicit
 
-**Status:** Proposed.
+**Status:** Implemented for the yellow-only path. The dead `updateColor(id:color:)` API was removed, and yellow normalization now lives on `StickyNote.enforcingYellow(_:)` so store load and sync transitions share the same behavior.
 
-**Why it matters:** `StickyNoteColor` still contains multiple colors, and `updateColor(id:color:)` accepts a color parameter, but store and sync normalization force notes back to yellow. That may be intentional legacy compatibility, but the API shape suggests color customization still exists.
+**Why it mattered:** `StickyNoteColor` still contains multiple colors, and `updateColor(id:color:)` accepted a color parameter, but store and sync normalization forced notes back to yellow. That made the API surface suggest color customization still existed even though the production behavior was yellow-only.
 
 **Files/functions involved:**
 
 - `iStickies/Models/StickyNoteColor.swift`
+- `iStickies/Models/StickyNote.swift`
+  - `enforcingYellow(_:)`
+  - `StickyNoteOrdering.areInIncreasingOrder(_:_:)`
 - `iStickies/Services/StickyNotesStore.swift`
-  - `updateColor(id:color:)`
-  - `enforceYellowNotes(_:)`
+  - `sortNotes(_:)`
 - `iStickies/Services/StickyNotesSyncCoordinator.swift`
-  - `enforceYellowNotes(_:)`
 - `iStickies/Services/StickyNoteRecordMapper.swift`
   - `write(_:to:)`
 
-**Concrete recommendation:** Choose one behavior and encode it deliberately:
-
-1. If notes are now always yellow, remove or deprecate color mutation and document old non-yellow colors as legacy imported state.
-2. If color customization should return, make `updateColor` honor the requested value and define how color sync should work with the production CloudKit schema.
+**Implemented behavior:** Notes are treated as yellow-only in current production behavior. Old non-yellow snapshots are normalized to yellow and marked for CloudKit upload through a shared model helper. Sorting was also centralized in `StickyNoteOrdering` while removing the dead store color mutation API.
 
 **Expected payoff:** Removes confusing dead API surface and avoids accidental reintroduction of partially supported color sync.
 
-**Rough implementation scope:** small if yellow-only, medium if restoring color sync.
+**Implementation scope:** small, completed.
 
 ### P2: Unknown CloudKit pending-change cases should not crash the app
 
