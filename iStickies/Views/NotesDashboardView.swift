@@ -76,7 +76,6 @@ struct StickyNotePaperSurface: View {
         ZStack {
             StickyNotePaperBackground(color: color)
             StickyNotePaperEdgeTone()
-            StickyNoteCornerCurl(color: color)
         }
         .clipShape(StickyNotePaperShape())
         .overlay {
@@ -110,10 +109,6 @@ enum StickyNotePaperHitRegion {
             rect.width / 2,
             rect.height / 2
         )
-        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
-        let curlReach = curlSize * 0.96
-        let rightCurveStartY = max(rect.minY + cornerRadius, rect.maxY - curlReach)
-        let bottomCurveEndX = max(rect.minX + cornerRadius, rect.maxX - curlReach)
 
         path.move(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
         path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
@@ -121,11 +116,10 @@ enum StickyNotePaperHitRegion {
             to: CGPoint(x: rect.maxX, y: rect.minY + cornerRadius),
             control: CGPoint(x: rect.maxX, y: rect.minY)
         )
-        path.addLine(to: CGPoint(x: rect.maxX, y: rightCurveStartY))
-        path.addCurve(
-            to: CGPoint(x: bottomCurveEndX, y: rect.maxY),
-            control1: CGPoint(x: rect.maxX, y: rect.maxY - (curlSize * 0.38)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.24), y: rect.maxY)
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - cornerRadius, y: rect.maxY),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
         )
         path.addLine(to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY))
         path.addQuadCurve(
@@ -221,177 +215,6 @@ private struct StickyNotePaperEdgeTone: View {
             }
         }
         .allowsHitTesting(false)
-    }
-}
-
-private enum StickyNotePaperMetrics {
-    static func curlSize(in rect: CGRect) -> CGFloat {
-        let shortestSide = min(rect.width, rect.height)
-        guard shortestSide > 0 else { return 0 }
-
-        let minimum = min(shortestSide * 0.28, 34)
-        let maximum = min(shortestSide * 0.38, 52)
-        return min(max(shortestSide * 0.26, minimum), maximum)
-    }
-}
-
-private struct StickyNoteCornerCurl: View {
-    let color: Color
-
-    var body: some View {
-        ZStack {
-            StickyNoteCurlPocketShadowShape()
-                .fill(.black.opacity(0.11))
-                .blur(radius: 2.4)
-                .offset(x: -0.7, y: 1.0)
-
-            StickyNoteCurlFoldShape()
-                .fill(color)
-                .overlay {
-                    StickyNoteCurlFoldShape()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    .white.opacity(0.80),
-                                    .white.opacity(0.40),
-                                    .clear,
-                                    .black.opacity(0.08)
-                                ],
-                                startPoint: .bottomTrailing,
-                                endPoint: .topLeading
-                            )
-                        )
-                }
-                .overlay {
-                    StickyNoteCurlFoldShape()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 1.0, green: 0.94, blue: 0.62).opacity(0.20),
-                                    .clear
-                                ],
-                                startPoint: .bottom,
-                                endPoint: .top
-                            )
-                        )
-                }
-                .overlay {
-                    StickyNoteCurlFoldShape()
-                        .stroke(.white.opacity(0.50), lineWidth: 0.7)
-                }
-
-            StickyNoteCurlCreaseShape()
-                .stroke(Color(red: 0.54, green: 0.40, blue: 0.10).opacity(0.15), lineWidth: 0.8)
-                .blur(radius: 0.2)
-
-            StickyNoteCurlHighlightShape()
-                .stroke(.white.opacity(0.62), lineWidth: 1.0)
-                .blur(radius: 0.2)
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-private struct StickyNoteCurlFoldShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
-        guard curlSize > 0 else { return Path() }
-
-        let bottomAnchor = CGPoint(
-            x: rect.maxX - (curlSize * 0.92),
-            y: rect.maxY - (curlSize * 0.02)
-        )
-        let innerPoint = CGPoint(
-            x: rect.maxX - (curlSize * 0.16),
-            y: rect.maxY - (curlSize * 0.16)
-        )
-        let rightAnchor = CGPoint(
-            x: rect.maxX - (curlSize * 0.02),
-            y: rect.maxY - (curlSize * 0.92)
-        )
-
-        var path = Path()
-        path.move(to: bottomAnchor)
-        path.addCurve(
-            to: innerPoint,
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.58), y: rect.maxY - (curlSize * 0.01)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.29), y: rect.maxY - (curlSize * 0.04))
-        )
-        path.addCurve(
-            to: rightAnchor,
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.05), y: rect.maxY - (curlSize * 0.31)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.01), y: rect.maxY - (curlSize * 0.58))
-        )
-        path.addCurve(
-            to: bottomAnchor,
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.20), y: rect.maxY - (curlSize * 0.64)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.55), y: rect.maxY - (curlSize * 0.21))
-        )
-        path.closeSubpath()
-
-        return path
-    }
-}
-
-private struct StickyNoteCurlPocketShadowShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
-        guard curlSize > 0 else { return Path() }
-
-        var path = Path()
-        path.move(to: CGPoint(x: rect.maxX - (curlSize * 0.98), y: rect.maxY))
-        path.addCurve(
-            to: CGPoint(x: rect.maxX, y: rect.maxY - (curlSize * 0.98)),
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.34), y: rect.maxY),
-            control2: CGPoint(x: rect.maxX, y: rect.maxY - (curlSize * 0.34))
-        )
-        path.addCurve(
-            to: CGPoint(x: rect.maxX - (curlSize * 0.30), y: rect.maxY - (curlSize * 0.24)),
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.04), y: rect.maxY - (curlSize * 0.58)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.12), y: rect.maxY - (curlSize * 0.35))
-        )
-        path.addCurve(
-            to: CGPoint(x: rect.maxX - (curlSize * 0.98), y: rect.maxY),
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.53), y: rect.maxY - (curlSize * 0.08)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.80), y: rect.maxY)
-        )
-        path.closeSubpath()
-
-        return path
-    }
-}
-
-private struct StickyNoteCurlCreaseShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
-        guard curlSize > 0 else { return Path() }
-
-        var path = Path()
-        path.move(to: CGPoint(x: rect.maxX - (curlSize * 0.84), y: rect.maxY - (curlSize * 0.035)))
-        path.addCurve(
-            to: CGPoint(x: rect.maxX - (curlSize * 0.035), y: rect.maxY - (curlSize * 0.84)),
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.34), y: rect.maxY - (curlSize * 0.035)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.035), y: rect.maxY - (curlSize * 0.34))
-        )
-
-        return path
-    }
-}
-
-private struct StickyNoteCurlHighlightShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let curlSize = StickyNotePaperMetrics.curlSize(in: rect)
-        guard curlSize > 0 else { return Path() }
-
-        var path = Path()
-        path.move(to: CGPoint(x: rect.maxX - (curlSize * 0.62), y: rect.maxY - (curlSize * 0.12)))
-        path.addCurve(
-            to: CGPoint(x: rect.maxX - (curlSize * 0.12), y: rect.maxY - (curlSize * 0.62)),
-            control1: CGPoint(x: rect.maxX - (curlSize * 0.33), y: rect.maxY - (curlSize * 0.13)),
-            control2: CGPoint(x: rect.maxX - (curlSize * 0.13), y: rect.maxY - (curlSize * 0.33))
-        )
-
-        return path
     }
 }
 
