@@ -676,7 +676,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             deletedZoneCount += 1
         }
 
-        if savedZoneCount > 0 || deletedZoneCount > 0 {
+        if Self.anyNonzero(savedZoneCount, deletedZoneCount) {
             StickyNotesLog.cloudKit.info(
                 """
                 Fetched CloudKit database changes savedZoneCount: \(savedZoneCount, privacy: .public) \
@@ -717,7 +717,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             deletedRecordCount += 1
         }
 
-        if modifiedRecordCount > 0 || deletedRecordCount > 0 || decodeFailureCount > 0 {
+        if Self.anyNonzero(modifiedRecordCount, deletedRecordCount, decodeFailureCount) {
             StickyNotesLog.cloudKit.info(
                 """
                 Fetched CloudKit record-zone changes modifiedCount: \(modifiedRecordCount, privacy: .public) \
@@ -860,9 +860,14 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             }
         }
 
-        if savedRecordCount > 0 || deletedRecordCount > 0 || conflictCount > 0
-            || retryCount > 0 || failedSaveCount > 0 || failedDeleteCount > 0
-        {
+        if Self.anyNonzero(
+            savedRecordCount,
+            deletedRecordCount,
+            conflictCount,
+            retryCount,
+            failedSaveCount,
+            failedDeleteCount
+        ) {
             StickyNotesLog.cloudKit.info(
                 """
                 Sent CloudKit record-zone changes applied savedCount: \(savedRecordCount, privacy: .public) \
@@ -942,6 +947,10 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
 
     private static func issueSummary(_ issueMessages: [String]) -> String {
         Array(Set(issueMessages)).sorted().joined(separator: " ")
+    }
+
+    private static func anyNonzero(_ counts: Int...) -> Bool {
+        counts.contains { $0 > 0 }
     }
 }
 

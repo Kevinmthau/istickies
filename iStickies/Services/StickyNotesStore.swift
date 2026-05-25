@@ -287,16 +287,6 @@ final class StickyNotesStore: ObservableObject {
         return .persisted(primaryContent: content)
     }
 
-    func updateColor(id: String, color: StickyNoteColor) {
-        mutateNote(
-            id: id,
-            touchModifiedAt: true,
-            commitOptions: CommitOptions(resortNoteID: id, syncDelay: stickyNotesDefaultCloudSyncDelay)
-        ) { note in
-            note.color = .yellow
-        }
-    }
-
     func updatePreferredFrame(id: String, frame: StickyNoteFrame) {
         mutateNote(
             id: id,
@@ -529,27 +519,8 @@ final class StickyNotesStore: ObservableObject {
         }
     }
 
-    private func enforceYellowNotes(_ notes: [StickyNote]) -> [StickyNote] {
-        notes.map { note in
-            guard note.color != .yellow else { return note }
-
-            var copy = note
-            copy.color = .yellow
-            copy.needsCloudUpload = true
-            return copy
-        }
-    }
-
     private func sortNotes(_ unsortedNotes: [StickyNote]) -> [StickyNote] {
-        unsortedNotes.sorted(by: shouldSortBefore)
-    }
-
-    private func shouldSortBefore(_ lhs: StickyNote, _ rhs: StickyNote) -> Bool {
-        if lhs.lastModified != rhs.lastModified {
-            return lhs.lastModified > rhs.lastModified
-        }
-
-        return lhs.createdAt > rhs.createdAt
+        unsortedNotes.sorted(by: StickyNoteOrdering.areInIncreasingOrder)
     }
 
     private func sortedNoteIDs(_ ids: [String]) -> [String] {
@@ -558,7 +529,7 @@ final class StickyNotesStore: ObservableObject {
                 return lhsID < rhsID
             }
 
-            return shouldSortBefore(lhs, rhs)
+            return StickyNoteOrdering.areInIncreasingOrder(lhs, rhs)
         }
     }
 
@@ -596,7 +567,7 @@ final class StickyNotesStore: ObservableObject {
                 return false
             }
 
-            return shouldSortBefore(note, existingNote)
+            return StickyNoteOrdering.areInIncreasingOrder(note, existingNote)
         } ?? orderedNoteIDs.endIndex
         orderedNoteIDs.insert(id, at: insertionIndex)
     }
@@ -661,7 +632,7 @@ final class StickyNotesStore: ObservableObject {
 
     private func applyLoadedSnapshot(_ snapshot: StickyNotesSnapshot) {
         let loadedNotes = sortNotes(
-            enforceYellowNotes(
+            StickyNote.enforcingYellow(
                 requeueLoadedNotesIfNeeded(
                     snapshot.notes,
                     needsCloudBootstrap: snapshot.cloudKitStateSerializationData == nil
