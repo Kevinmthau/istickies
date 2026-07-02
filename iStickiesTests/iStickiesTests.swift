@@ -2469,6 +2469,62 @@ struct iStickiesTests {
         ])
     }
 
+    @Test func stickyWindowButtonLayoutPlacesOriginsInsideDefaultContentBounds() {
+        let contentBounds = CGRect(x: 0, y: 0, width: 280, height: 280)
+        let buttonSizes = Array(repeating: CGSize(width: 14, height: 14), count: 3)
+        let origins = StickyNoteWindowButtonLayout.origins(
+            forButtonSizes: buttonSizes,
+            inContentBounds: contentBounds,
+            isContentViewFlipped: true
+        )
+
+        for (origin, size) in zip(origins, buttonSizes) {
+            let buttonFrame = CGRect(origin: origin, size: size)
+            #expect(contentBounds.contains(buttonFrame))
+        }
+    }
+
+    @Test func stickyWindowButtonLayoutKeepsButtonCentersInsidePaperHitRegion() {
+        let contentBounds = CGRect(x: 0, y: 0, width: 280, height: 280)
+        let buttonSizes = Array(repeating: CGSize(width: 14, height: 14), count: 3)
+        let origins = StickyNoteWindowButtonLayout.origins(
+            forButtonSizes: buttonSizes,
+            inContentBounds: contentBounds,
+            isContentViewFlipped: true
+        )
+
+        for (origin, size) in zip(origins, buttonSizes) {
+            let center = CGPoint(
+                x: origin.x + (size.width / 2),
+                y: origin.y + (size.height / 2)
+            )
+            #expect(StickyNotePaperHitRegion.contains(center, in: contentBounds))
+        }
+    }
+
+    @Test func stickyWindowButtonLayoutUsesVisualTopLeftForFlippedAndUnflippedContent() throws {
+        let contentBounds = CGRect(x: 0, y: 0, width: 280, height: 280)
+        let buttonSizes = Array(repeating: CGSize(width: 14, height: 14), count: 3)
+        let flippedOrigins = StickyNoteWindowButtonLayout.origins(
+            forButtonSizes: buttonSizes,
+            inContentBounds: contentBounds,
+            isContentViewFlipped: true
+        )
+        let unflippedOrigins = StickyNoteWindowButtonLayout.origins(
+            forButtonSizes: buttonSizes,
+            inContentBounds: contentBounds,
+            isContentViewFlipped: false
+        )
+        let flippedFirstOrigin = try #require(flippedOrigins.first)
+        let unflippedFirstOrigin = try #require(unflippedOrigins.first)
+
+        #expect(flippedFirstOrigin.x == StickyNoteWindowButtonLayout.leadingInset)
+        #expect(flippedFirstOrigin.y == StickyNoteWindowButtonLayout.topInset)
+        #expect(unflippedFirstOrigin.x == StickyNoteWindowButtonLayout.leadingInset)
+        #expect(unflippedFirstOrigin.y == contentBounds.maxY - StickyNoteWindowButtonLayout.topInset - buttonSizes[0].height)
+        #expect(flippedOrigins.map(\.x) == unflippedOrigins.map(\.x))
+    }
+
     @Test func stickyWindowGridLayoutReturnsNoFramesForNoWindows() {
         let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
             for: [],

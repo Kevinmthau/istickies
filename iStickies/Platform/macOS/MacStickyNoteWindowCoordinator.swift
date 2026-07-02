@@ -237,6 +237,11 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
 private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
     private static let defaultContentSize = CGSize(width: 280, height: 280)
     private static let minimumContentSize = CGSize(width: 220, height: 220)
+    private static let windowButtonTypes: [NSWindow.ButtonType] = [
+        .closeButton,
+        .miniaturizeButton,
+        .zoomButton,
+    ]
 
     let noteID: String
 
@@ -298,6 +303,9 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         )
 
         delegate = self
+        hostingView.onPaperHoverChange = { [weak self] isHovered in
+            self?.setWindowButtonsVisible(isHovered)
+        }
         contentView = hostingView
         contentMinSize = Self.minimumContentSize
         minSize = NSSize(width: Self.minimumContentSize.width, height: Self.minimumContentSize.height)
@@ -306,10 +314,13 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         isReleasedWhenClosed = false
         hasShadow = true
         level = .normal
+        acceptsMouseMovedEvents = true
 
         if note.preferredFrame == nil {
             setContentSize(Self.defaultContentSize)
         }
+        layoutWindowButtons()
+        setWindowButtonsVisible(false)
 
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -350,6 +361,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         title = ""
         backgroundColor = .clear
         isOpaque = false
+        layoutWindowButtons()
 
         guard let preferredFrame = note.preferredFrame else { return }
 
@@ -361,6 +373,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         ))
 
         frameController.applyModelFrame(targetFrame, force: forceFrame)
+        layoutWindowButtons()
     }
 
     func closeFromCoordinator() {
@@ -404,6 +417,36 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         )
     }
 
+    private var windowButtons: [NSButton] {
+        Self.windowButtonTypes.compactMap { standardWindowButton($0) }
+    }
+
+    private func layoutWindowButtons() {
+        guard let contentView else { return }
+        let buttons = windowButtons
+        guard !buttons.isEmpty else { return }
+
+        let origins = StickyNoteWindowButtonLayout.origins(
+            forButtonSizes: buttons.map(\.bounds.size),
+            inContentBounds: contentView.bounds,
+            isContentViewFlipped: contentView.isFlipped
+        )
+
+        for (button, contentOrigin) in zip(buttons, origins) {
+            guard let buttonSuperview = button.superview else { continue }
+
+            let windowOrigin = contentView.convert(contentOrigin, to: nil)
+            let buttonSuperviewOrigin = buttonSuperview.convert(windowOrigin, from: nil)
+            button.setFrameOrigin(buttonSuperviewOrigin)
+        }
+    }
+
+    private func setWindowButtonsVisible(_ isVisible: Bool) {
+        for button in windowButtons {
+            button.isHidden = !isVisible
+        }
+    }
+
     func windowWillMove(_ notification: Notification) {
         frameController.windowWillMove()
     }
@@ -414,6 +457,11 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
 
     func windowDidEndLiveResize(_ notification: Notification) {
         frameController.windowDidEndLiveResize()
+        layoutWindowButtons()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        layoutWindowButtons()
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -440,12 +488,81 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
 }
 
 private final class StickyNotePaperHitRegionHostingView<Content: View>: NSHostingView<Content> {
+    var onPaperHoverChange: ((Bool) -> Void)?
+
+    private var paperTrackingArea: NSTrackingArea?
+    private var isPaperHovered = false
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let paperTrackingArea {
+            removeTrackingArea(paperTrackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [
+                .mouseEnteredAndExited,
+                .mouseMoved,
+                .activeAlways,
+                .inVisibleRect,
+            ],
+            owner: self,
+            userInfo: nil
+        )
+        paperTrackingArea = trackingArea
+        addTrackingArea(trackingArea)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.acceptsMouseMovedEvents = true
+
+        guard let window else {
+            setPaperHovered(false)
+            return
+        }
+
+        updatePaperHoverState(atWindowPoint: window.mouseLocationOutsideOfEventStream)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        updatePaperHoverState(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        updatePaperHoverState(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        setPaperHovered(false)
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard StickyNotePaperHitRegion.contains(swiftUIPoint(for: point), in: bounds) else {
             return nil
         }
 
         return super.hitTest(point)
+    }
+
+    private func updatePaperHoverState(with event: NSEvent) {
+        updatePaperHoverState(atWindowPoint: event.locationInWindow)
+    }
+
+    private func updatePaperHoverState(atWindowPoint windowPoint: CGPoint) {
+        let localPoint = convert(windowPoint, from: nil)
+        setPaperHovered(StickyNotePaperHitRegion.contains(swiftUIPoint(for: localPoint), in: bounds))
+    }
+
+    private func setPaperHovered(_ isHovered: Bool) {
+        guard isPaperHovered != isHovered else { return }
+        isPaperHovered = isHovered
+        onPaperHoverChange?(isHovered)
     }
 
     private func swiftUIPoint(for point: NSPoint) -> CGPoint {
@@ -455,6 +572,38 @@ private final class StickyNotePaperHitRegionHostingView<Content: View>: NSHostin
             x: point.x,
             y: bounds.maxY - point.y + bounds.minY
         )
+    }
+}
+
+enum StickyNoteWindowButtonLayout {
+    static let leadingInset: CGFloat = 12
+    static let topInset: CGFloat = 12
+    static let centerSpacing: CGFloat = 20
+
+    static func origins(
+        forButtonSizes buttonSizes: [CGSize],
+        inContentBounds contentBounds: CGRect,
+        isContentViewFlipped: Bool
+    ) -> [CGPoint] {
+        var centerX = contentBounds.minX + leadingInset + ((buttonSizes.first?.width ?? 0) / 2)
+
+        return buttonSizes.map { buttonSize in
+            defer {
+                centerX += centerSpacing
+            }
+
+            let originY: CGFloat
+            if isContentViewFlipped {
+                originY = contentBounds.minY + topInset
+            } else {
+                originY = contentBounds.maxY - topInset - buttonSize.height
+            }
+
+            return CGPoint(
+                x: centerX - (buttonSize.width / 2),
+                y: originY
+            )
+        }
     }
 }
 
