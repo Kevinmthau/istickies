@@ -303,6 +303,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         )
 
         delegate = self
+        setWindowButtonsVisible(false)
         hostingView.onPaperHoverChange = { [weak self] isHovered in
             self?.setWindowButtonsVisible(isHovered)
         }
@@ -320,7 +321,6 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
             setContentSize(Self.defaultContentSize)
         }
         layoutWindowButtons()
-        setWindowButtonsVisible(false)
 
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -435,9 +435,10 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         for (button, contentOrigin) in zip(buttons, origins) {
             guard let buttonSuperview = button.superview else { continue }
 
-            let windowOrigin = contentView.convert(contentOrigin, to: nil)
-            let buttonSuperviewOrigin = buttonSuperview.convert(windowOrigin, from: nil)
-            button.setFrameOrigin(buttonSuperviewOrigin)
+            let contentFrame = CGRect(origin: contentOrigin, size: button.bounds.size)
+            let windowFrame = contentView.convert(contentFrame, to: nil)
+            let buttonSuperviewFrame = buttonSuperview.convert(windowFrame, from: nil)
+            button.setFrameOrigin(buttonSuperviewFrame.origin)
         }
     }
 
