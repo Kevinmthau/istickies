@@ -21,7 +21,7 @@ Runtime performance is fine for a small sticky-notes app, but the current model 
 Validation run:
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project iStickies.xcodeproj -scheme iStickies -destination 'platform=macOS' -derivedDataPath /tmp/istickies-deriveddata CODE_SIGNING_ALLOWED=NO test -only-testing:iStickiesTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project iStickies.xcodeproj -scheme iStickiesUnitTests -destination 'platform=macOS' -derivedDataPath /tmp/istickies-deriveddata CODE_SIGNING_ALLOWED=NO test
 ```
 
 Result: passed.
@@ -306,7 +306,7 @@ for (_, window) in windowsToClose {
 
 **Expected payoff:** Better coverage for user-facing regressions.
 
-**Validation note:** The UI test target compiles during the macOS unit-test build. Running the UI tests locally still requires a working macOS UI-test signing/automation setup; in the current environment the unsigned runner is killed before XCTest connects, while normal signing fails because the Mac Development certificate/profile is unavailable.
+**Validation note:** Local unit-test runs use the shared `iStickiesUnitTests` scheme so they do not build the macOS UI-test runner. Running the UI tests locally still requires a working macOS UI-test signing/automation setup; in the current environment the unsigned runner is killed before XCTest connects, while normal signing fails because the Mac Development certificate/profile is unavailable.
 
 **Rough implementation scope:** medium.
 

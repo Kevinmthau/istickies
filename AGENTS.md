@@ -31,6 +31,6 @@ Treat it as the current prioritized roadmap. Prefer implementing one scoped item
 ## Validation
 
 - Preferred macOS test pass:
-  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project iStickies.xcodeproj -scheme iStickies -destination 'platform=macOS' -derivedDataPath /tmp/istickies-deriveddata CODE_SIGNING_ALLOWED=NO test -only-testing:iStickiesTests`
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project iStickies.xcodeproj -scheme iStickiesUnitTests -destination 'platform=macOS' -derivedDataPath /tmp/istickies-deriveddata CODE_SIGNING_ALLOWED=NO test`
 
 - If you touch the AppKit window coordinator or editor bridge, run the macOS tests before finishing.

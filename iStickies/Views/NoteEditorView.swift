@@ -173,7 +173,10 @@ private struct StickyNoteEditorContent: View {
     @ViewBuilder
     private func editor(for note: StickyNote) -> some View {
 #if os(macOS)
-        MacStickyTextView(text: draftContentBinding)
+        MacStickyTextView(
+            text: draftContentBinding,
+            shouldAutoFocus: autoFocusOnAppear
+        )
             .padding(10)
 #else
         IOSStickyTextView(
@@ -344,8 +347,19 @@ private struct NoteEditorContent: View {
 }
 
 #if os(macOS)
+private final class AutoFocusingStickyTextScrollView: NSScrollView {
+    var onMoveToWindow: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onMoveToWindow?()
+    }
+}
+
 private struct MacStickyTextView: NSViewRepresentable {
     @Binding var text: String
+
+    let shouldAutoFocus: Bool
 
     private static let minimumVerticalInset: CGFloat = 12
 
@@ -354,7 +368,7 @@ private struct MacStickyTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = AutoFocusingStickyTextScrollView()
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
@@ -389,6 +403,15 @@ private struct MacStickyTextView: NSViewRepresentable {
         }
 
         scrollView.documentView = textView
+        let coordinator = context.coordinator
+        let shouldAutoFocusOnWindowAttach = shouldAutoFocus
+        scrollView.onMoveToWindow = { [weak textView] in
+            guard let textView else { return }
+            coordinator.applyAutoFocusIfNeeded(
+                to: textView,
+                shouldAutoFocus: shouldAutoFocusOnWindowAttach
+            )
+        }
         Self.updateStickyTextInsets(in: scrollView, textView: textView)
 
         return scrollView
@@ -400,6 +423,10 @@ private struct MacStickyTextView: NSViewRepresentable {
         guard textView.string != text else {
             context.coordinator.pendingProgrammaticText = nil
             Self.updateStickyTextInsets(in: scrollView, textView: textView)
+            context.coordinator.applyAutoFocusIfNeeded(
+                to: textView,
+                shouldAutoFocus: shouldAutoFocus
+            )
             return
         }
 
@@ -413,11 +440,19 @@ private struct MacStickyTextView: NSViewRepresentable {
         ) else {
             context.coordinator.pendingProgrammaticText = text
             Self.updateStickyTextInsets(in: scrollView, textView: textView)
+            context.coordinator.applyAutoFocusIfNeeded(
+                to: textView,
+                shouldAutoFocus: shouldAutoFocus
+            )
             return
         }
 
         context.coordinator.applyProgrammaticText(text, to: textView)
         Self.updateStickyTextInsets(in: scrollView, textView: textView)
+        context.coordinator.applyAutoFocusIfNeeded(
+            to: textView,
+            shouldAutoFocus: shouldAutoFocus
+        )
     }
 
     private static func updateStickyTextInsets(in scrollView: NSScrollView, textView: NSTextView) {
@@ -446,9 +481,20 @@ private struct MacStickyTextView: NSViewRepresentable {
 
         var isApplyingProgrammaticUpdate = false
         var pendingProgrammaticText: String?
+        var didAutoFocus = false
 
         init(text: Binding<String>) {
             _text = text
+        }
+
+        func applyAutoFocusIfNeeded(to textView: NSTextView, shouldAutoFocus: Bool) {
+            guard shouldAutoFocus, !didAutoFocus else { return }
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView, let window = textView.window else { return }
+                guard !self.didAutoFocus else { return }
+                self.didAutoFocus = true
+                window.makeFirstResponder(textView)
+            }
         }
 
         func textDidChange(_ notification: Notification) {

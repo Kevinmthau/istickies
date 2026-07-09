@@ -19,6 +19,8 @@ iStickies is a SwiftUI sticky-notes app for macOS and iOS with local-first persi
 
 - macOS compile check:
   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project iStickies.xcodeproj -scheme iStickies -destination 'platform=macOS' -derivedDataPath /tmp/istickies-deriveddata CODE_SIGNING_ALLOWED=NO build`
+- macOS unit tests:
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project iStickies.xcodeproj -scheme iStickiesUnitTests -destination 'platform=macOS' -derivedDataPath /tmp/istickies-deriveddata CODE_SIGNING_ALLOWED=NO test`
 - iOS compile check:
   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project iStickies.xcodeproj -scheme iStickies -destination 'generic/platform=iOS' -derivedDataPath /tmp/istickies-ios-deriveddata CODE_SIGNING_ALLOWED=NO build`
 

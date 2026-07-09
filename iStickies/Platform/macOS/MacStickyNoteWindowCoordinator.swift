@@ -12,6 +12,7 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var hasPresentedInitialNotes = false
     private var isBringingWindowsToFront = false
+    private var pendingEditorAutoFocusNoteIDs: Set<String> = []
 
     init(store: StickyNotesStore) {
         self.store = store
@@ -48,6 +49,7 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
     func createAndFocusNote() {
         guard store.localRecoveryIssue == nil else { return }
         let id = store.createNote()
+        pendingEditorAutoFocusNoteIDs.insert(id)
         focus(noteID: id)
     }
 
@@ -159,10 +161,12 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
             guard let note = store.note(withID: noteID) else { continue }
 
             let offset = CGFloat(windows.count % 8) * 24
+            let shouldAutoFocusEditor = pendingEditorAutoFocusNoteIDs.remove(noteID) != nil
             let window = StickyNoteWindow(
                 note: note,
                 store: store,
                 cascadeOffset: offset,
+                autoFocusEditorOnAppear: shouldAutoFocusEditor,
                 onActivate: { [weak self] noteID in
                     self?.bringAllWindowsToFront(prioritizing: noteID)
                 },
@@ -275,6 +279,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         note: StickyNote,
         store: StickyNotesStore,
         cascadeOffset: CGFloat,
+        autoFocusEditorOnAppear: Bool,
         onActivate: @escaping (String) -> Void,
         onClose: @escaping (String) -> Void
     ) {
@@ -292,7 +297,11 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         } ?? NSRect(origin: origin, size: Self.defaultContentSize)
 
         let hostingView = StickyNotePaperHitRegionHostingView(
-            rootView: NoteEditorView(noteID: note.id).stickyNotesStore(store)
+            rootView: NoteEditorView(
+                noteID: note.id,
+                autoFocusOnAppear: autoFocusEditorOnAppear
+            )
+            .stickyNotesStore(store)
         )
 
         super.init(
@@ -310,6 +319,7 @@ private final class StickyNoteWindow: NSWindow, NSWindowDelegate {
         contentView = hostingView
         contentMinSize = Self.minimumContentSize
         minSize = NSSize(width: Self.minimumContentSize.width, height: Self.minimumContentSize.height)
+        identifier = NSUserInterfaceItemIdentifier("StickyNotes.stickyWindow.\(note.id)")
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
         isReleasedWhenClosed = false

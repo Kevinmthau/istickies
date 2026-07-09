@@ -11,9 +11,14 @@ final class iStickiesUITests: XCTestCase {
         var app = launchApp(storeNamespace: namespace)
         let noteText = "UI test note \(UUID().uuidString.prefix(8))"
 
+#if os(macOS)
+        _ = waitForEditor(in: app)
+        app.typeText(noteText)
+#else
         let editor = waitForEditor(in: app)
         focus(editor)
         editor.typeText(noteText)
+#endif
         XCTAssertTrue(waitForEditorText(noteText, in: app))
 
         waitForSnapshotPersistence()
@@ -65,8 +70,14 @@ final class iStickiesUITests: XCTestCase {
         _ = waitForEditor(in: app)
         XCTAssertTrue(waitForWindowCount(in: app, atLeast: 1))
 
+        let existingWindowIdentifiers = stickyWindowIdentifiers(in: app)
         app.typeKey("n", modifierFlags: [.command])
         XCTAssertTrue(waitForWindowCount(in: app, atLeast: 2))
+        let newWindow = waitForNewStickyWindow(in: app, excluding: existingWindowIdentifiers)
+
+        let newNoteText = "New focused note \(UUID().uuidString.prefix(8))"
+        app.typeText(newNoteText)
+        XCTAssertTrue(waitForEditorText(newNoteText, in: newWindow))
 
         app.typeKey("n", modifierFlags: [.command])
         XCTAssertTrue(waitForWindowCount(in: app, atLeast: 3))
@@ -136,9 +147,13 @@ final class iStickiesUITests: XCTestCase {
         timeout: TimeInterval = 5
     ) -> Bool {
         let predicate = NSPredicate { _, _ in
-            let editor = app.textViews["StickyNotes.noteEditor"].firstMatch
-            guard editor.exists else { return false }
-            return (editor.value as? String)?.contains(text) == true
+            app.textViews
+                .matching(identifier: "StickyNotes.noteEditor")
+                .allElementsBoundByIndex
+                .contains { editor in
+                    guard editor.exists else { return false }
+                    return (editor.value as? String)?.contains(text) == true
+                }
         }
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: app)
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
@@ -180,6 +195,59 @@ final class iStickiesUITests: XCTestCase {
     }
 
 #if os(macOS)
+    private static let stickyWindowIdentifierPrefix = "StickyNotes.stickyWindow."
+
+    private func stickyWindowIdentifiers(in app: XCUIApplication) -> Set<String> {
+        Set(
+            app.windows
+                .allElementsBoundByIndex
+                .map(\.identifier)
+                .filter { $0.hasPrefix(Self.stickyWindowIdentifierPrefix) }
+        )
+    }
+
+    private func waitForNewStickyWindow(
+        in app: XCUIApplication,
+        excluding existingIdentifiers: Set<String>,
+        timeout: TimeInterval = 5,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> XCUIElement {
+        let predicate = NSPredicate { _, _ in
+            self.newStickyWindow(in: app, excluding: existingIdentifiers) != nil
+        }
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: timeout), .completed, file: file, line: line)
+
+        return newStickyWindow(in: app, excluding: existingIdentifiers) ?? app.windows.firstMatch
+    }
+
+    private func newStickyWindow(
+        in app: XCUIApplication,
+        excluding existingIdentifiers: Set<String>
+    ) -> XCUIElement? {
+        app.windows
+            .allElementsBoundByIndex
+            .first { window in
+                window.identifier.hasPrefix(Self.stickyWindowIdentifierPrefix)
+                    && !existingIdentifiers.contains(window.identifier)
+            }
+    }
+
+    private func waitForEditorText(
+        _ text: String,
+        in window: XCUIElement,
+        timeout: TimeInterval = 5
+    ) -> Bool {
+        let predicate = NSPredicate { _, _ in
+            let editor = window.textViews["StickyNotes.noteEditor"].firstMatch
+            guard editor.exists else { return false }
+            return (editor.value as? String)?.contains(text) == true
+        }
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: window)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
     private func waitForWindowCount(
         in app: XCUIApplication,
         atLeast count: Int,
