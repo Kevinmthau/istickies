@@ -2525,6 +2525,100 @@ struct iStickiesTests {
         #expect(flippedOrigins.map(\.x) == unflippedOrigins.map(\.x))
     }
 
+    @Test func stickyWindowPairLayoutPlacesNewWindowToRightAndBottomAligned() {
+        let anchorFrame = NSRect(x: 100, y: 140, width: 240, height: 180)
+        let newFrame = NSRect(x: 0, y: 0, width: 180, height: 120)
+        let tiledFrame = StickyNoteWindowPairLayout.tiledFrame(
+            for: newFrame,
+            anchoredTo: anchorFrame,
+            avoiding: [anchorFrame],
+            in: NSRect(x: 0, y: 0, width: 1_000, height: 700)
+        )
+
+        #expect(tiledFrame == NSRect(x: 356, y: 140, width: 180, height: 120))
+        #expect(tiledFrame.minX - anchorFrame.maxX == StickyNoteWindowPairLayout.defaultGap)
+        #expect(tiledFrame.minY == anchorFrame.minY)
+        #expect(tiledFrame.size == newFrame.size)
+    }
+
+    @Test func stickyWindowPairLayoutKeepsBottomAlignmentWithinVisibleBounds() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 800, height: 500)
+        let anchorFrame = NSRect(x: 100, y: -40, width: 200, height: 180)
+        let tiledFrame = StickyNoteWindowPairLayout.tiledFrame(
+            for: NSRect(x: 0, y: 0, width: 180, height: 120),
+            anchoredTo: anchorFrame,
+            avoiding: [anchorFrame],
+            in: visibleFrame
+        )
+
+        #expect(tiledFrame == NSRect(x: 316, y: 0, width: 180, height: 120))
+        #expect(tiledFrame.minX >= visibleFrame.minX)
+        #expect(tiledFrame.maxX <= visibleFrame.maxX)
+        #expect(tiledFrame.minY >= visibleFrame.minY)
+        #expect(tiledFrame.maxY <= visibleFrame.maxY)
+    }
+
+    @Test func stickyWindowPairLayoutAvoidsOccupiedPreferredPosition() {
+        let anchorFrame = NSRect(x: 100, y: 100, width: 200, height: 150)
+        let blockingFrame = NSRect(x: 316, y: 100, width: 180, height: 120)
+        let tiledFrame = StickyNoteWindowPairLayout.tiledFrame(
+            for: NSRect(x: 0, y: 0, width: 180, height: 120),
+            anchoredTo: anchorFrame,
+            avoiding: [anchorFrame, blockingFrame],
+            in: NSRect(x: 0, y: 0, width: 1_000, height: 700)
+        )
+
+        #expect(tiledFrame == NSRect(x: 316, y: 236, width: 180, height: 120))
+        #expect(framesRespectGap([anchorFrame, blockingFrame, tiledFrame], gap: 16))
+    }
+
+    @Test func stickyWindowPairLayoutAvoidsOverlapWithZeroGap() {
+        let anchorFrame = NSRect(x: 100, y: 100, width: 200, height: 150)
+        let blockingFrame = NSRect(x: 300, y: 100, width: 180, height: 120)
+        let tiledFrame = StickyNoteWindowPairLayout.tiledFrame(
+            for: NSRect(x: 0, y: 0, width: 180, height: 120),
+            anchoredTo: anchorFrame,
+            avoiding: [anchorFrame, blockingFrame],
+            in: NSRect(x: 0, y: 0, width: 1_000, height: 700),
+            gap: 0
+        )
+
+        #expect(!tiledFrame.intersects(anchorFrame))
+        #expect(!tiledFrame.intersects(blockingFrame))
+    }
+
+    @Test func stickyWindowPairLayoutWrapsToNearestOpenSlotAtScreenEdge() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 700, height: 500)
+        let anchorFrame = NSRect(x: 450, y: 200, width: 200, height: 150)
+        let tiledFrame = StickyNoteWindowPairLayout.tiledFrame(
+            for: NSRect(x: 0, y: 0, width: 180, height: 120),
+            anchoredTo: anchorFrame,
+            avoiding: [anchorFrame],
+            in: visibleFrame
+        )
+
+        #expect(tiledFrame == NSRect(x: 520, y: 64, width: 180, height: 120))
+        #expect(tiledFrame.minX >= visibleFrame.minX)
+        #expect(tiledFrame.maxX <= visibleFrame.maxX)
+        #expect(tiledFrame.minY >= visibleFrame.minY)
+        #expect(tiledFrame.maxY <= visibleFrame.maxY)
+        #expect(framesRespectGap([anchorFrame, tiledFrame], gap: 16))
+    }
+
+    @Test func stickyWindowPairLayoutClampsWhenNoOpenSlotExists() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 300, height: 200)
+        let anchorFrame = visibleFrame
+        let tiledFrame = StickyNoteWindowPairLayout.tiledFrame(
+            for: NSRect(x: 0, y: 0, width: 100, height: 100),
+            anchoredTo: anchorFrame,
+            avoiding: [anchorFrame],
+            in: visibleFrame
+        )
+
+        #expect(tiledFrame == NSRect(x: 200, y: 0, width: 100, height: 100))
+        #expect(tiledFrame.intersects(anchorFrame))
+    }
+
     @Test func stickyWindowGridLayoutReturnsNoFramesForNoWindows() {
         let tiledFrames = StickyNoteWindowGridLayout.tiledFrames(
             for: [],

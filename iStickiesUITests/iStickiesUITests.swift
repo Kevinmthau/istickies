@@ -71,9 +71,17 @@ final class iStickiesUITests: XCTestCase {
         XCTAssertTrue(waitForWindowCount(in: app, atLeast: 1))
 
         let existingWindowIdentifiers = stickyWindowIdentifiers(in: app)
+        let initialWindow = try XCTUnwrap(
+            app.windows.allElementsBoundByIndex.first { window in
+                window.identifier.hasPrefix(Self.stickyWindowIdentifierPrefix)
+            }
+        )
+        let initialWindowFrame = initialWindow.frame
         app.typeKey("n", modifierFlags: [.command])
         XCTAssertTrue(waitForWindowCount(in: app, atLeast: 2))
         let newWindow = waitForNewStickyWindow(in: app, excluding: existingWindowIdentifiers)
+        XCTAssertEqual(newWindow.frame.minX, initialWindowFrame.maxX + 16, accuracy: 2)
+        XCTAssertEqual(newWindow.frame.maxY, initialWindowFrame.maxY, accuracy: 2)
 
         let newNoteText = "New focused note \(UUID().uuidString.prefix(8))"
         app.typeText(newNoteText)
@@ -171,7 +179,7 @@ final class iStickiesUITests: XCTestCase {
             app.typeKey(.delete, modifierFlags: [.command])
         }
 
-        let deleteButton = app.buttons["Delete"].firstMatch
+        let deleteButton = app.sheets.buttons["Delete"].firstMatch
         XCTAssertTrue(deleteButton.waitForExistence(timeout: 4))
         deleteButton.click()
 #else

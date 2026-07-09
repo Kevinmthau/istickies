@@ -13,6 +13,7 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
     private var hasPresentedInitialNotes = false
     private var isBringingWindowsToFront = false
     private var pendingEditorAutoFocusNoteIDs: Set<String> = []
+    private var pendingNewNoteAnchorIDs: [String: String] = [:]
 
     init(store: StickyNotesStore) {
         self.store = store
@@ -48,8 +49,12 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
 
     func createAndFocusNote() {
         guard store.localRecoveryIssue == nil else { return }
+        let anchorNoteID = windowOrder.last
         let id = store.createNote()
         pendingEditorAutoFocusNoteIDs.insert(id)
+        if let anchorNoteID {
+            pendingNewNoteAnchorIDs[id] = anchorNoteID
+        }
         focus(noteID: id)
     }
 
@@ -162,6 +167,8 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
 
             let offset = CGFloat(windows.count % 8) * 24
             let shouldAutoFocusEditor = pendingEditorAutoFocusNoteIDs.remove(noteID) != nil
+            let anchorWindow = pendingNewNoteAnchorIDs.removeValue(forKey: noteID)
+                .flatMap { windows[$0] }
             let window = StickyNoteWindow(
                 note: note,
                 store: store,
@@ -175,6 +182,18 @@ final class MacStickyNoteWindowCoordinator: ObservableObject {
                     self?.windowOrder.removeAll { $0 == noteID }
                 }
             )
+
+            if note.preferredFrame == nil,
+               let anchorWindow,
+               let visibleFrame = (anchorWindow.screen ?? NSScreen.main)?.visibleFrame {
+                let tiledFrame = StickyNoteWindowPairLayout.tiledFrame(
+                    for: window.frame,
+                    anchoredTo: anchorWindow.frame,
+                    avoiding: windows.values.map(\.frame),
+                    in: visibleFrame
+                )
+                window.applyTiledFrame(tiledFrame)
+            }
 
             windows[noteID] = window
             promoteWindow(noteID)
@@ -615,6 +634,149 @@ enum StickyNoteWindowButtonLayout {
                 y: originY
             )
         }
+    }
+}
+
+enum StickyNoteWindowPairLayout {
+    static let defaultGap: CGFloat = 16
+
+    static func tiledFrame(
+        for newFrame: NSRect,
+        anchoredTo anchorFrame: NSRect,
+        avoiding existingFrames: [NSRect],
+        in visibleFrame: NSRect,
+        gap: CGFloat = defaultGap
+    ) -> NSRect {
+        guard visibleFrame.width > 0, visibleFrame.height > 0 else { return newFrame }
+
+        let minimumGap = max(0, gap)
+        let preferredOrigin = CGPoint(
+            x: anchorFrame.maxX + minimumGap,
+            y: anchorFrame.minY
+        )
+        let preferredFrame = NSRect(origin: preferredOrigin, size: newFrame.size)
+
+        if isFullyVisible(preferredFrame, in: visibleFrame),
+           respectsGap(preferredFrame, from: existingFrames, gap: minimumGap) {
+            return preferredFrame
+        }
+
+        var xOrigins = [
+            preferredOrigin.x,
+            visibleFrame.minX,
+            visibleFrame.maxX - newFrame.width,
+        ]
+        var yOrigins = [
+            preferredOrigin.y,
+            visibleFrame.minY,
+            visibleFrame.maxY - newFrame.height,
+        ]
+
+        for frame in existingFrames {
+            xOrigins.append(contentsOf: [
+                frame.minX - minimumGap - newFrame.width,
+                frame.maxX + minimumGap,
+                frame.minX,
+                frame.maxX - newFrame.width,
+            ])
+            yOrigins.append(contentsOf: [
+                frame.minY - minimumGap - newFrame.height,
+                frame.maxY + minimumGap,
+                frame.minY,
+                frame.maxY - newFrame.height,
+            ])
+        }
+
+        let candidates = xOrigins.flatMap { x in
+            yOrigins.map { y in
+                NSRect(x: x, y: y, width: newFrame.width, height: newFrame.height)
+            }
+        }
+        .filter { candidate in
+            isFullyVisible(candidate, in: visibleFrame)
+                && respectsGap(candidate, from: existingFrames, gap: minimumGap)
+        }
+        .sorted { lhs, rhs in
+            let lhsDistance = squaredDistance(from: lhs.origin, to: preferredOrigin)
+            let rhsDistance = squaredDistance(from: rhs.origin, to: preferredOrigin)
+
+            if lhsDistance != rhsDistance {
+                return lhsDistance < rhsDistance
+            }
+            if lhs.maxX != rhs.maxX {
+                return lhs.maxX > rhs.maxX
+            }
+            if lhs.minY != rhs.minY {
+                return lhs.minY < rhs.minY
+            }
+            return lhs.minX > rhs.minX
+        }
+
+        if let candidate = candidates.first {
+            return candidate
+        }
+
+        return NSRect(
+            x: clampedOrigin(
+                preferredOrigin.x,
+                minimum: visibleFrame.minX,
+                maximum: visibleFrame.maxX - newFrame.width
+            ),
+            y: clampedOrigin(
+                preferredOrigin.y,
+                minimum: visibleFrame.minY,
+                maximum: visibleFrame.maxY - newFrame.height
+            ),
+            width: newFrame.width,
+            height: newFrame.height
+        )
+    }
+
+    private static func isFullyVisible(_ frame: NSRect, in visibleFrame: NSRect) -> Bool {
+        frame.minX >= visibleFrame.minX
+            && frame.maxX <= visibleFrame.maxX
+            && frame.minY >= visibleFrame.minY
+            && frame.maxY <= visibleFrame.maxY
+    }
+
+    private static func respectsGap(
+        _ candidate: NSRect,
+        from existingFrames: [NSRect],
+        gap: CGFloat
+    ) -> Bool {
+        existingFrames.allSatisfy { existingFrame in
+            if gap == 0, candidate.intersects(existingFrame) {
+                return false
+            }
+
+            let horizontalGap = max(
+                candidate.minX - existingFrame.maxX,
+                existingFrame.minX - candidate.maxX,
+                0
+            )
+            let verticalGap = max(
+                candidate.minY - existingFrame.maxY,
+                existingFrame.minY - candidate.maxY,
+                0
+            )
+
+            return horizontalGap >= gap || verticalGap >= gap
+        }
+    }
+
+    private static func squaredDistance(from lhs: CGPoint, to rhs: CGPoint) -> CGFloat {
+        let deltaX = lhs.x - rhs.x
+        let deltaY = lhs.y - rhs.y
+        return (deltaX * deltaX) + (deltaY * deltaY)
+    }
+
+    private static func clampedOrigin(
+        _ value: CGFloat,
+        minimum: CGFloat,
+        maximum: CGFloat
+    ) -> CGFloat {
+        guard maximum >= minimum else { return minimum }
+        return min(max(value, minimum), maximum)
     }
 }
 
