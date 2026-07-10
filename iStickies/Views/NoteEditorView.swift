@@ -301,6 +301,7 @@ private struct NoteEditorContent: View {
                 .clipShape(StickyNotePaperShape())
                 .background {
                     StickyNotePaperSurface(color: note.color.tint, showsShadow: false)
+                        .ignoresSafeArea(.container, edges: .top)
                 }
                 .contentShape(StickyNotePaperShape())
 #else
