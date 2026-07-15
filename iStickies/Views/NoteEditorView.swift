@@ -390,6 +390,7 @@ private struct MacStickyTextView: NSViewRepresentable {
         textView.drawsBackground = false
         textView.font = StickyNoteTypography.editorFont
         textView.textColor = .black
+        textView.alignment = .center
         textView.insertionPointColor = .black
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
@@ -605,6 +606,7 @@ private struct IOSStickyTextView: UIViewRepresentable {
         textView.font = StickyNoteTypography.editorFont
         textView.adjustsFontForContentSizeCategory = true
         textView.textColor = .black
+        textView.textAlignment = .center
         textView.text = text
         textView.alwaysBounceVertical = true
         textView.keyboardDismissMode = .interactive
