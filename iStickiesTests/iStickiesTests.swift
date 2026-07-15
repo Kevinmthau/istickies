@@ -2248,6 +2248,17 @@ struct iStickiesTests {
         #expect(verticalInset == 186)
     }
 
+    @Test func stickyTextLayoutAccountsForTopWindowControlBar() {
+        let verticalInset = StickyTextEditorLayout.centeredVerticalInset(
+            availableHeight: 400,
+            contentHeight: 28,
+            minimumVerticalInset: 12,
+            topControlBarHeight: 28
+        )
+
+        #expect(verticalInset == 172)
+    }
+
     @Test func stickyTextLayoutFallsBackToMinimumInsetForTallContent() {
         let verticalInset = StickyTextEditorLayout.centeredVerticalInset(
             availableHeight: 140,

@@ -30,17 +30,23 @@ enum StickyTextEditorLayout {
     static func centeredVerticalInset(
         availableHeight: CGFloat,
         contentHeight: CGFloat,
-        minimumVerticalInset: CGFloat
+        minimumVerticalInset: CGFloat,
+        topControlBarHeight: CGFloat = 0
     ) -> CGFloat {
         let clampedAvailableHeight = max(availableHeight, 0)
         let clampedContentHeight = max(contentHeight, 0)
+        let clampedControlBarHeight = min(
+            max(topControlBarHeight, 0),
+            clampedAvailableHeight
+        )
+        let visuallyAvailableHeight = clampedAvailableHeight - clampedControlBarHeight
         let minimumRequiredHeight = (minimumVerticalInset * 2) + clampedContentHeight
 
-        guard clampedAvailableHeight > minimumRequiredHeight else {
+        guard visuallyAvailableHeight > minimumRequiredHeight else {
             return minimumVerticalInset
         }
 
-        return minimumVerticalInset + ((clampedAvailableHeight - minimumRequiredHeight) / 2)
+        return minimumVerticalInset + ((visuallyAvailableHeight - minimumRequiredHeight) / 2)
     }
 }
 
@@ -407,8 +413,9 @@ private struct MacStickyTextView: NSViewRepresentable {
         scrollView.documentView = textView
         let coordinator = context.coordinator
         let shouldAutoFocusOnWindowAttach = shouldAutoFocus
-        scrollView.onMoveToWindow = { [weak textView] in
-            guard let textView else { return }
+        scrollView.onMoveToWindow = { [weak scrollView, weak textView] in
+            guard let scrollView, let textView else { return }
+            Self.updateStickyTextInsets(in: scrollView, textView: textView)
             coordinator.applyAutoFocusIfNeeded(
                 to: textView,
                 shouldAutoFocus: shouldAutoFocusOnWindowAttach
@@ -469,13 +476,22 @@ private struct MacStickyTextView: NSViewRepresentable {
         let verticalInset = StickyTextEditorLayout.centeredVerticalInset(
             availableHeight: scrollView.contentView.bounds.height,
             contentHeight: contentHeight,
-            minimumVerticalInset: Self.minimumVerticalInset
+            minimumVerticalInset: Self.minimumVerticalInset,
+            topControlBarHeight: Self.topControlBarHeight(for: textView)
         )
         let updatedInset = NSSize(width: 0, height: verticalInset)
 
         if textView.textContainerInset != updatedInset {
             textView.textContainerInset = updatedInset
         }
+    }
+
+    private static func topControlBarHeight(for textView: NSTextView) -> CGFloat {
+        guard let window = textView.window,
+              window.styleMask.contains(.fullSizeContentView),
+              let contentView = window.contentView else { return 0 }
+
+        return max(contentView.bounds.height - window.contentLayoutRect.height, 0)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
