@@ -31,7 +31,7 @@ The repo is now prepped for Xcode Cloud with a committed shared scheme (`iSticki
 1. In Xcode, open `Settings > Accounts` and sign in with the Apple Developer account that owns your App Store Connect app.
 2. Open `iStickies.xcodeproj`, then go to `Report navigator > Cloud` and create a new workflow for this repository.
 3. Configure the workflow:
-   - **Start condition**: remove the automatic **Branch Changes** condition. GitHub Actions triggers `main` builds, and the workflow remains available for manual branch builds.
+   - **Start condition**: enable **Branch Changes** for `main` so Xcode Cloud builds automatically after each push.
    - **Action**: **Archive** the `iStickies` scheme.
    - **Post-action**: **Distribute to TestFlight**.
 4. Optional script hooks:
@@ -46,21 +46,4 @@ The repo is now prepped for Xcode Cloud with a committed shared scheme (`iSticki
 - `ci_pre_xcodebuild.sh` syncs Apple Generic build numbers to Xcode Cloud's `CI_BUILD_NUMBER` during archive actions so uploads don't reuse the checked-in build number.
 - `ci_post_xcodebuild.sh` generates `TestFlight/WhatToTest.en-US.txt` from recent commit subjects during archive actions, so Xcode Cloud populates TestFlight's "What to Test" field automatically.
 - If App Store Connect already has higher build numbers for this app, set the workflow's next build number in Xcode Cloud before the first upload.
-- After the first successful archive/upload run, pushes to `main` can auto-publish to TestFlight through the GitHub Actions trigger below.
-
-## Triggering Xcode Cloud from GitHub
-
-The GitHub Actions workflow at `.github/workflows/trigger-xcode-cloud.yml` dispatches the existing Xcode Cloud workflow whenever `main` is pushed. It can also be run manually for another branch.
-
-### One-time setup in GitHub
-
-1. Create a GitHub environment named `app-store-connect`.
-2. Add these environment secrets:
-   - `APP_STORE_CONNECT_ISSUER_ID`
-   - `APP_STORE_CONNECT_KEY_ID`
-   - `APP_STORE_CONNECT_PRIVATE_KEY` (full `.p8` key contents)
-3. Add this environment variable:
-   - `XCODE_CLOUD_WORKFLOW_ID` (from App Store Connect URL: `/ci/workflows/{workflow-id}`)
-4. Run **Actions > Trigger Xcode Cloud Build > Run workflow** once and choose `main` to verify the credentials.
-
-After setup, each push to `main` triggers the Xcode Cloud workflow through the App Store Connect API without requiring local Xcode interaction. The manual action remains available for branch-specific builds.
+- After the first successful archive/upload run, pushes to `main` can auto-publish to TestFlight through Xcode Cloud's branch-change trigger.
