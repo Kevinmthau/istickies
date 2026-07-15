@@ -1,6 +1,9 @@
 name: Trigger Xcode Cloud Build
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       branch:
@@ -15,25 +18,150 @@ permissions:
 jobs:
   dispatch-xcode-cloud:
     runs-on: ubuntu-latest
-    # Configure this GitHub environment with required reviewers and
-    # environment-scoped App Store Connect secrets.
+    # Keep the App Store Connect credentials scoped to this environment.
     environment:
       name: app-store-connect
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Validate App Store Connect configuration
+        shell: bash
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          XCODE_CLOUD_WORKFLOW_ID: ${{ vars.XCODE_CLOUD_WORKFLOW_ID }}
+        run: |
+          missing=()
 
-      - name: Generate App Store Connect JWT token
-        id: asc
-        uses: yuki0n0/action-appstoreconnect-token@f72b55376ca945b2c1049163f6a1e0116bbe7029 # v1.0
-        with:
-          issuer id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          key id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          key: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          for name in \
+            APP_STORE_CONNECT_ISSUER_ID \
+            APP_STORE_CONNECT_KEY_ID \
+            APP_STORE_CONNECT_PRIVATE_KEY \
+            XCODE_CLOUD_WORKFLOW_ID
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Missing app-store-connect environment configuration: ${missing[*]}"
+            exit 1
+          fi
 
       - name: Trigger Xcode Cloud workflow
-        uses: yorifuji/actions-xcode-cloud-dispatcher@dcf4ab200b9fb89a20c903bae840f2e2ce96422d # v1
+        id: xcode-cloud
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          XCODE_CLOUD_BRANCH: ${{ github.event_name == 'push' && github.ref_name || inputs.branch }}
+          XCODE_CLOUD_WORKFLOW_ID: ${{ vars.XCODE_CLOUD_WORKFLOW_ID }}
         with:
-          appstore-connect-token: ${{ steps.asc.outputs.token }}
-          xcode-cloud-workflow-id: ${{ vars.XCODE_CLOUD_WORKFLOW_ID }}
-          git-branch-name: ${{ inputs.branch }}
+          script: |
+            const crypto = require('crypto');
+
+            const encode = (value) => Buffer
+              .from(JSON.stringify(value))
+              .toString('base64url');
+
+            const now = Math.floor(Date.now() / 1000);
+            const signingInput = [
+              encode({
+                alg: 'ES256',
+                kid: process.env.APP_STORE_CONNECT_KEY_ID,
+                typ: 'JWT',
+              }),
+              encode({
+                aud: 'appstoreconnect-v1',
+                exp: now + 20 * 60,
+                iat: now,
+                iss: process.env.APP_STORE_CONNECT_ISSUER_ID,
+              }),
+            ].join('.');
+
+            const signature = crypto.sign(
+              'sha256',
+              Buffer.from(signingInput),
+              {
+                dsaEncoding: 'ieee-p1363',
+                key: process.env.APP_STORE_CONNECT_PRIVATE_KEY.replace(/\\n/g, '\n'),
+              },
+            );
+            const token = `${signingInput}.${signature.toString('base64url')}`;
+            core.setSecret(token);
+
+            const apiBase = 'https://api.appstoreconnect.apple.com/v1';
+            const request = async (path, options = {}) => {
+              const response = await fetch(
+                path.startsWith('https://') ? path : `${apiBase}${path}`,
+                {
+                  ...options,
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                    ...options.headers,
+                  },
+                },
+              );
+              const body = await response.json();
+
+              if (!response.ok) {
+                const details = body.errors
+                  ?.map((error) => error.detail || error.title)
+                  .filter(Boolean)
+                  .join('; ');
+                throw new Error(
+                  `App Store Connect API request failed (${response.status})${details ? `: ${details}` : ''}`,
+                );
+              }
+
+              return body;
+            };
+
+            const workflowID = process.env.XCODE_CLOUD_WORKFLOW_ID;
+            const branch = process.env.XCODE_CLOUD_BRANCH;
+            const repository = await request(`/ciWorkflows/${workflowID}/repository`);
+            const repositoryID = repository.data.id;
+
+            const references = [];
+            let next = `${apiBase}/scmRepositories/${repositoryID}/gitReferences?limit=200`;
+            while (next) {
+              const page = await request(next);
+              references.push(...page.data);
+              next = page.links?.next || null;
+            }
+
+            const reference = references.find(({ attributes }) => (
+              attributes.kind === 'BRANCH'
+              && !attributes.isDeleted
+              && (
+                attributes.name === branch
+                || attributes.canonicalName === `refs/heads/${branch}`
+              )
+            ));
+            if (!reference) {
+              throw new Error(`Xcode Cloud cannot find branch '${branch}' in the linked repository.`);
+            }
+
+            const build = await request('/ciBuildRuns', {
+              method: 'POST',
+              body: JSON.stringify({
+                data: {
+                  type: 'ciBuildRuns',
+                  attributes: {},
+                  relationships: {
+                    workflow: {
+                      data: { type: 'ciWorkflows', id: workflowID },
+                    },
+                    sourceBranchOrTag: {
+                      data: { type: 'scmGitReferences', id: reference.id },
+                    },
+                  },
+                },
+              }),
+            });
+
+            core.setOutput('build-id', build.data.id);
+            core.setOutput('build-number', build.data.attributes.number);
+            core.info(`Triggered Xcode Cloud build ${build.data.attributes.number} for '${branch}'.`);
