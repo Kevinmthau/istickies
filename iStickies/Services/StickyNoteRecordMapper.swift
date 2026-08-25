@@ -99,7 +99,8 @@ enum StickyNoteRecordMapper {
         record[StickyNoteRecordField.titleOverride] = nil
         record[StickyNoteRecordField.color] = nil
         record[StickyNoteRecordField.createdAt] = nil
-        record[StickyNoteRecordField.lastModified] = note.lastModified as CKRecordValue
+        record[StickyNoteRecordField.lastModified] = StickyNoteCloudTimestamp
+            .canonicalized(note.lastModified) as CKRecordValue
         record[StickyNoteRecordField.isOpen] = nil
         record[StickyNoteRecordField.frameX] = nil
         record[StickyNoteRecordField.frameY] = nil

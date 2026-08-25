@@ -278,7 +278,10 @@ enum StickyNotesMergeEngine {
         _ remoteNote: StickyNote
     ) -> Bool {
         localNote.content == remoteNote.content
-            && localNote.lastModified == remoteNote.lastModified
+            && StickyNoteCloudTimestamp.representsSameInstant(
+                localNote.lastModified,
+                remoteNote.lastModified
+            )
     }
 
     private static func refreshedLocalNote(

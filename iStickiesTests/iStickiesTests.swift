@@ -631,12 +631,14 @@ struct iStickiesTests {
         )
         #expect(capturedVerification.noteID == originalNote.id)
         #expect(capturedVerification.content == originalNote.content)
-        #expect(capturedVerification.lastModified == originalNote.lastModified)
+        #expect(capturedVerification.lastModified == Date(timeIntervalSince1970: 20.875))
         #expect(capturedSnapshot.notes.first?.content == "Newer payload")
 
         let acceptedOriginal = try #require(
             await captureService.remoteSnapshot().first
         )
+        #expect(acceptedOriginal.lastModified == Date(timeIntervalSince1970: 20.875))
+        #expect(acceptedOriginal.lastModified != originalNote.lastModified)
         let restartService = VerificationLifecycleCloudService(
             remoteNotes: [acceptedOriginal],
             remoteSnapshotCompleteness: .partial("CloudKit fetch was incomplete.")
@@ -966,7 +968,10 @@ struct iStickiesTests {
         #expect(decoded.notes.first?.createdAt == preciseDate)
         #expect(decoded.notes.first?.lastModified == preciseDate)
         #expect(decoded.lastSuccessfulCloudSync == preciseDate)
-        #expect(decoded.cloudSaveVerifications.first?.lastModified == preciseDate)
+        #expect(
+            decoded.cloudSaveVerifications.first?.lastModified
+                == StickyNoteCloudTimestamp.canonicalized(preciseDate)
+        )
     }
 
     @Test func fileStoreStillDecodesLegacyISO8601DateSnapshots() async throws {
@@ -1584,6 +1589,40 @@ struct iStickiesTests {
         #expect(record["content"] as? String == "Local draft")
     }
 
+    @Test func cloudKitRecordAndAmbiguousVerificationUseMillisecondTimestamps() throws {
+        let preciseDate = Date(timeIntervalSince1970: 20.8754321)
+        let note = StickyNote(
+            id: "precise-date",
+            content: "Cloud payload",
+            lastModified: preciseDate,
+            needsCloudUpload: true
+        )
+
+        let record = StickyNoteRecordMapper.record(for: note, zoneID: .default)
+        let recordDate = try #require(record["lastModified"] as? Date)
+        let verification = CloudSaveVerification(note: note)
+        let normalizedRemote = StickyNote(
+            id: note.id,
+            content: note.content,
+            lastModified: Date(timeIntervalSince1970: 20.875),
+            needsCloudUpload: false
+        )
+        let laterRemote = StickyNote(
+            id: note.id,
+            content: note.content,
+            lastModified: Date(timeIntervalSince1970: 20.877),
+            needsCloudUpload: false
+        )
+        var differentRemoteContent = normalizedRemote
+        differentRemoteContent.content = "Different payload"
+
+        #expect(recordDate == Date(timeIntervalSince1970: 20.875))
+        #expect(verification.lastModified == recordDate)
+        #expect(verification.matches(normalizedRemote))
+        #expect(!verification.matches(laterRemote))
+        #expect(!verification.matches(differentRemoteContent))
+    }
+
     @Test func cloudKitRecordIgnoresRemoteTitleOverride() throws {
         let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
         let record = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
@@ -1759,7 +1798,7 @@ struct iStickiesTests {
     }
 
     @Test func completeMatchingRemoteSnapshotAcknowledgesUnblockedDirtyUpload() throws {
-        let uploadedAt = Date(timeIntervalSince1970: 30)
+        let uploadedAt = Date(timeIntervalSince1970: 30.8754321)
         let dirtyNote = StickyNote(
             id: "ambiguous-upload",
             content: "Possibly accepted",
@@ -1771,7 +1810,7 @@ struct iStickiesTests {
         let remoteNote = StickyNote(
             id: dirtyNote.id,
             content: dirtyNote.content,
-            lastModified: uploadedAt,
+            lastModified: Date(timeIntervalSince1970: 30.875),
             needsCloudUpload: false,
             cloudKitSystemFieldsData: Data([2]),
             cloudRevision: "accepted-revision"
@@ -1788,6 +1827,39 @@ struct iStickiesTests {
         #expect(outcome.notes.count == 1)
         #expect(acknowledgedNote.needsCloudUpload == false)
         #expect(acknowledgedNote.cloudUploadBlock == nil)
+        #expect(acknowledgedNote.cloudKitSystemFieldsData == Data([2]))
+        #expect(acknowledgedNote.cloudRevision == "accepted-revision")
+    }
+
+    @Test func completeSnapshotAcknowledgesAmbiguousSaveAfterCloudKitNormalizesTimestamp() throws {
+        let sentNote = StickyNote(
+            id: "ambiguous-normalized-date",
+            content: "Possibly accepted",
+            lastModified: Date(timeIntervalSince1970: 30.8754321),
+            needsCloudUpload: true,
+            cloudRevision: "old-revision"
+        )
+        let remoteNote = StickyNote(
+            id: sentNote.id,
+            content: sentNote.content,
+            lastModified: Date(timeIntervalSince1970: 30.875),
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([2]),
+            cloudRevision: "accepted-revision"
+        )
+
+        let outcome = StickyNotesMergeEngine.merge(
+            localNotes: [sentNote],
+            remoteNotes: [remoteNote],
+            pendingDeletionIDs: [],
+            remoteSnapshotCompleteness: .complete,
+            saveVerifications: [CloudSaveVerification(note: sentNote)]
+        )
+        let acknowledgedNote = try #require(outcome.notes.first)
+
+        #expect(outcome.notes.count == 1)
+        #expect(acknowledgedNote.content == sentNote.content)
+        #expect(acknowledgedNote.needsCloudUpload == false)
         #expect(acknowledgedNote.cloudKitSystemFieldsData == Data([2]))
         #expect(acknowledgedNote.cloudRevision == "accepted-revision")
     }
@@ -4709,10 +4781,18 @@ private actor VerificationLifecycleCloudService: StickyNotesCloudSyncing {
     func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {
         let quarantinedNoteIDs = Set(saveVerificationsByNoteID.keys)
         let eligibleSaves = saves.filter { !quarantinedNoteIDs.contains($0.id) }
+        var savedNotes: [StickyNote] = []
 
         for note in eligibleSaves {
             actualSentNotes.append(note)
-            remoteNotesByID[note.id] = note.markedClean()
+            var serverNote = note.markedClean()
+            let wholeMilliseconds = (serverNote.lastModified.timeIntervalSince1970 * 1_000)
+                .rounded(.towardZero)
+            serverNote.lastModified = Date(
+                timeIntervalSince1970: wholeMilliseconds / 1_000
+            )
+            remoteNotesByID[note.id] = serverNote
+            savedNotes.append(serverNote)
         }
         for noteID in deletions {
             remoteNotesByID.removeValue(forKey: noteID)
@@ -4731,7 +4811,7 @@ private actor VerificationLifecycleCloudService: StickyNotesCloudSyncing {
         }
 
         return CloudSyncBatchResult(
-            savedNotes: eligibleSaves.map { $0.markedClean() },
+            savedNotes: savedNotes,
             deletedNoteIDs: deletions
         )
     }

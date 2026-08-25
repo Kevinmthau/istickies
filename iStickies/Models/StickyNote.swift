@@ -19,11 +19,27 @@ struct CloudSaveVerification: Codable, Equatable, Sendable {
     init(note: StickyNote) {
         noteID = note.id
         content = note.content
-        lastModified = note.lastModified
+        lastModified = StickyNoteCloudTimestamp.canonicalized(note.lastModified)
     }
 
     func matches(_ note: StickyNote) -> Bool {
-        content == note.content && lastModified == note.lastModified
+        content == note.content
+            && StickyNoteCloudTimestamp.representsSameInstant(lastModified, note.lastModified)
+    }
+}
+
+enum StickyNoteCloudTimestamp {
+    // CloudKit represents Date/Time fields as milliseconds since the Unix epoch. A server
+    // round trip can therefore remove sub-millisecond precision from a Swift Date.
+    private static let maximumRoundTripDelta: TimeInterval = 0.001
+
+    static func canonicalized(_ date: Date) -> Date {
+        let milliseconds = (date.timeIntervalSince1970 * 1_000).rounded()
+        return Date(timeIntervalSince1970: milliseconds / 1_000)
+    }
+
+    static func representsSameInstant(_ lhs: Date, _ rhs: Date) -> Bool {
+        abs(lhs.timeIntervalSince1970 - rhs.timeIntervalSince1970) < maximumRoundTripDelta
     }
 }
 
