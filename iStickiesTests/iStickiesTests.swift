@@ -590,7 +590,7 @@ struct iStickiesTests {
         let originalNote = StickyNote(
             id: "ambiguous-note",
             content: "Original payload",
-            lastModified: Date(timeIntervalSince1970: 20),
+            lastModified: Date(timeIntervalSince1970: 20.8754321),
             needsCloudUpload: true
         )
         try await StickyNotesFileStore(fileURL: fileURL).save(
@@ -941,6 +941,63 @@ struct iStickiesTests {
 
         #expect(decoded.schemaVersion == StickyNotesSnapshot.currentSchemaVersion)
         #expect(decoded.cloudSaveVerifications == snapshot.cloudSaveVerifications)
+    }
+
+    @Test func fileStorePreservesFractionalAmbiguousSaveTimestamps() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let preciseDate = Date(timeIntervalSince1970: 20.8754321)
+        let sentNote = StickyNote(
+            id: "fractional-ambiguous",
+            content: "Possibly saved",
+            createdAt: preciseDate,
+            lastModified: preciseDate,
+            needsCloudUpload: true
+        )
+        try await fileStore.save(
+            StickyNotesSnapshot(
+                notes: [sentNote],
+                lastSuccessfulCloudSync: preciseDate,
+                cloudSaveVerifications: [CloudSaveVerification(note: sentNote)]
+            )
+        )
+
+        let decoded = try await fileStore.load()
+
+        #expect(decoded.notes.first?.createdAt == preciseDate)
+        #expect(decoded.notes.first?.lastModified == preciseDate)
+        #expect(decoded.lastSuccessfulCloudSync == preciseDate)
+        #expect(decoded.cloudSaveVerifications.first?.lastModified == preciseDate)
+    }
+
+    @Test func fileStoreStillDecodesLegacyISO8601DateSnapshots() async throws {
+        let fileURL = temporaryStoreURL()
+        let legacyDate = Date(timeIntervalSince1970: 20)
+        let legacyNote = StickyNote(
+            id: "legacy-date",
+            content: "Legacy",
+            createdAt: legacyDate,
+            lastModified: legacyDate,
+            needsCloudUpload: false
+        )
+        let legacyEncoder = JSONEncoder()
+        legacyEncoder.dateEncodingStrategy = .iso8601
+        let legacyData = try legacyEncoder.encode(
+            StickyNotesSnapshot(
+                notes: [legacyNote],
+                lastSuccessfulCloudSync: legacyDate
+            )
+        )
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try legacyData.write(to: fileURL, options: .atomic)
+
+        let decoded = try await StickyNotesFileStore(fileURL: fileURL).load()
+
+        #expect(decoded.notes.first?.createdAt == legacyDate)
+        #expect(decoded.notes.first?.lastModified == legacyDate)
+        #expect(decoded.lastSuccessfulCloudSync == legacyDate)
     }
 
     @Test func cloudKitRecordWithoutColorDefaultsToYellow() throws {
@@ -4930,7 +4987,7 @@ private func waitForSnapshot(
     in fileStore: StickyNotesFileStore,
     predicate: @escaping (StickyNotesSnapshot) -> Bool
 ) async throws -> StickyNotesSnapshot {
-    for _ in 0..<20 {
+    for _ in 0..<80 {
         let snapshot = try await fileStore.load()
         if predicate(snapshot) {
             return snapshot

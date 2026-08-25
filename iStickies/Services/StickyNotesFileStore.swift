@@ -14,11 +14,15 @@ actor StickyNotesFileStore {
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        // Numeric seconds preserve Date's fractional precision. Exact timestamps are part of
+        // ambiguous CloudKit save verification, so truncating them can manufacture conflicts.
+        encoder.dateEncodingStrategy = .secondsSince1970
         self.encoder = encoder
 
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            try StickyNotesSnapshotDateCoding.decode(from: decoder)
+        }
         self.decoder = decoder
     }
 
@@ -130,6 +134,32 @@ actor StickyNotesFileStore {
         return baseURL
             .appendingPathComponent(bundleIdentifier, isDirectory: true)
             .appendingPathComponent("sticky-notes.json", isDirectory: false)
+    }
+}
+
+private enum StickyNotesSnapshotDateCoding {
+    static func decode(from decoder: Decoder) throws -> Date {
+        let container = try decoder.singleValueContainer()
+        if let seconds = try? container.decode(Double.self) {
+            return Date(timeIntervalSince1970: seconds)
+        }
+
+        let encodedDate = try container.decode(String.self)
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: encodedDate) {
+            return date
+        }
+
+        let legacyFormatter = ISO8601DateFormatter()
+        legacyFormatter.formatOptions = [.withInternetDateTime]
+        guard let date = legacyFormatter.date(from: encodedDate) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Expected seconds since 1970 or an ISO-8601 date."
+            )
+        }
+        return date
     }
 }
 
