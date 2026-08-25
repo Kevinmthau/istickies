@@ -8,6 +8,8 @@ The previous highest production data-loss risk was that an empty, unavailable, p
 
 The previous biggest remaining correctness risk was cross-device conflict handling: an active editor draft could ignore a remote update and later flush over it without checking whether the persisted base changed. That P0 draft safety fix is now implemented: editor drafts track their persisted base content, delayed saves use a checked store API, and stale draft flushes create a conflict copy instead of overwriting the current primary note.
 
+A production-only sync failure was also fixed: the app wrote a `titleOverride` field that was never deployed to the production CloudKit schema, so the first note that forked into a `Conflict Copy` was rejected by the server on every retry. The field is now local device state. Permanently rejected saves are removed from the CloudKit queue and given a durable local upload block: they remain dirty and protected from remote-deletion semantics without retry-looping. A later content edit retries the new payload, while an explicit Retry, pull-to-refresh, or Sync Now action gives the unchanged payload one recovery attempt.
+
 The current hardening pass also implemented the remaining highest-risk P0/P1 app fixes: local snapshot recovery with backup/quarantine behavior, CloudKit persisted account/cache state, same-account remote-zone reset reupload behavior, CloudKit revision-based conflict detection for tagged notes, and the macOS window iteration crash fix.
 
 Structured observability is now in place for the sync and persistence paths. The app uses content-free `OSLog` categories for local load/save recovery, snapshot completeness, CloudKit account changes, remote-zone resets, retry/conflict counts, and persistence failures.
@@ -100,9 +102,49 @@ If persisted content changed since the draft base and differs from the draft, th
 
 **Implementation scope:** medium, completed.
 
+### P0: Undeployed CloudKit fields wedge production sync
+
+**Status:** Implemented. `titleOverride` is now device-local state that is never written to or read from CloudKit. Item-attributed record-save failures use a fail-closed CloudKit policy: only known transient conditions remain retryable, while permission, entitlement, account-policy, configuration, quota, constraint, schema, asset, database, unknown non-CloudKit, and unknown CloudKit item failures are classified as permanent rejections. Non-CloudKit or unattributed operation-level failures remain retryable because they do not prove a specific record payload is invalid. Permanent failures are removed from the automatic CloudKit queue and persisted as locally blocked uploads that remain merge-protected until their content changes or the user explicitly retries them.
+
+**Why it mattered:** `StickyNoteRecordMapper.write(_:to:)` deliberately clears every field that is missing from the deployed production schema (`color`, `createdAt`, `isOpen`, `frame*`), but it still wrote `titleOverride` whenever the note had one. The only producer of a non-nil `titleOverride` is the `"Conflict Copy"` marker set by `StickyNotesMergeEngine.makeConflictCopy(from:)` and `StickyNotesStore.makeDraftConflictCopy(from:content:)`, so the mismatch stayed invisible until a sync conflict forked a note. The production save then failed with `Cannot create or modify field 'titleOverride' in record 'StickyNote' in production schema`. Because the failure was classified as `.terminal`, the note kept `needsCloudUpload = true`, the pending record-zone change stayed queued, and `retrySyncDelay` rescheduled the same doomed save every five seconds, re-raising the sync alert indefinitely.
+
+**Files/functions involved:**
+
+- `iStickies/Services/StickyNoteRecordMapper.swift`
+  - `StickyNoteRecordMapper.note(from:)`
+  - `StickyNoteRecordMapper.write(_:to:)`
+- `iStickies/Models/StickyNote.swift`
+  - `CloudSaveVerification`
+  - `StickyNotesSnapshot.cloudSaveVerifications`
+- `iStickies/Services/StickyNotesMergeEngine.swift`
+  - `StickyNotesMergeEngine.apply(syncResult:to:pendingDeletionIDs:sentNotesByID:)`
+  - `StickyNotesMergeEngine.remoteReplacement(from:preservingWindowStateFrom:)`
+  - `StickyNotesMergeEngine.hasSharedCloudContentChanges(_:_:)`
+- `iStickies/Services/CloudKitErrorClassifier.swift`
+  - `CloudKitErrorClassifier.classifyRecordSaveFailure(_:)`
+- `iStickies/Services/CloudKitSendBatchTracker.swift`
+  - `CloudKitSendBatchTracker.markPermanentlyRejectedSave(noteID:message:)`
+- `iStickies/Services/StickyNotesCloudService.swift`
+  - `CloudKitStickyNotesCloudService.applySentRecordZoneChanges(_:syncEngine:)`
+  - `CloudKitStickyNotesCloudService.recoverRecordSaveFailures(from:syncEngine:)`
+- `iStickies/Services/StickyNotesStore.swift`
+  - `StickyNotesStore.syncNow(retryingBlockedUploads:)`
+- `iStickies/Services/StickyNotesSyncCoordinator.swift`
+  - `StickyNotesSyncCoordinator.merge(remoteSnapshot:localState:)`
+
+**Implemented behavior:** `titleOverride` joins `isOpen` and `preferredFrame` as local device state: it is cleared on write, decoded as `nil`, preserved across remote replacement, and excluded from cloud-content comparisons so a locally retitled note no longer looks like a conflict on every sync. Separately, a `.permanentlyRejected` save classification removes the record from `CKSyncEngine` pending state and drops it from the in-flight note map. Partial failures are classified per record so permanent failures can be blocked without discarding recoverable `unknownItem` work. Delegate events and their matching thrown partial error share per-attempt failure ownership, preventing the same item failure from consuming recovery twice. Batch-only evidence stays provisional until the attempt closes, allowing a later root-plus-sibling or limit delivery to promote the same record while preventing roots from unrelated delivery groups from authorizing it. Unattributed operation errors never mass-block every expected save. The note keeps `needsCloudUpload = true` plus a persisted upload block, so complete remote snapshots cannot delete or overwrite the only unsynced local copy. A complete remote snapshot with exactly the dirty local content and a modification date equal at CloudKit's millisecond precision acknowledges that a prior save actually succeeded, adopts the remote revision/system fields, and clears the dirty/block state; incomplete and reset snapshots cannot make that inference.
+
+Ambiguous `serverResponseLost` saves persist the exact sent content and modification date as a local verification record. Snapshot dates now use lossless numeric seconds so fractional modification times survive restart; the decoder remains compatible with existing ISO-8601 snapshot dates. Verification treats dates within CloudKit's one-millisecond wire precision as the same instant, preventing server-normalized timestamps from manufacturing false conflicts. The send tracker records the saves actually materialized into each size-limited CKSyncEngine batch and removes IDs as definitive responses arrive, so a lost response cannot quarantine unsent records from the larger logical scope. Both automatic and explicit sends quarantine the remaining ambiguous records through partial/unavailable fetches and app restarts. The next authoritative snapshot resolves them: a matching remote payload is acknowledged, a matching original payload plus a newer local edit refreshes CloudKit metadata without creating a false conflict, divergent content preserves a conflict copy and any existing upload block, and a missing record clears stale system fields before a bounded resend. Local deletion, account changes, and zone resets clear the corresponding quarantine safely. A restart-level integration test covers fractional-timestamp capture, disk persistence, server millisecond normalization, partial-fetch quarantine, authoritative release, and exactly-once upload of an edit made after the ambiguous send.
+
+Blocked notes are excluded from automatic outgoing saves and retry scheduling; an actual content edit clears the block and queues the new payload. Explicit Retry, pull-to-refresh, and Sync Now actions include blocked notes in one bounded send batch so an app or schema fix can heal unchanged content without restoring an automatic loop. If CloudKit reports `unknownItem` for stale system fields, that batch gets exactly one scoped fresh-record retry. `limitExceeded` operations are split into stable smaller scopes until they succeed or a single-record retry proves that one payload is too large; only that singleton is blocked. Every scoped retry explicitly re-enqueues its save changes before sending because CKSyncEngine does not promise to retain application-recoverable failures. A scoped `serverResponseLost` quarantines only unresolved notes that request actually materialized. For atomic partial failures, permanent/unknown/conflict roots are handled first and their `batchRequestFailed` siblings receive one scoped retry without re-including the bad root. Whether a bounded batch succeeds, fails transiently, or remains unresolved, forced pending changes are removed before return so they cannot leak into a later automatic send. Manual blocked retries, ordinary edit/delete requests, and lifecycle/network sync triggers that arrive during an active pass are coalesced into the next serialized pass instead of being dropped. Generic failed syncs no longer schedule a fixed five-second retry; retryable work remains dirty for a queued request or a later lifecycle/user sync trigger. Rejection logs include counts and a private error message without note content, titles, or note IDs.
+
+**Follow-up:** If per-note titles should sync across devices, add `titleOverride` to the `StickyNote` record type in CloudKit Dashboard, deploy the schema to production, and only then reinstate the read/write in `StickyNoteRecordMapper`.
+
+**Implementation scope:** completed.
+
 ### P1: CloudKit service is the main architectural bottleneck
 
-**Why it matters:** `CloudKitStickyNotesCloudService` is 805 lines and owns too many responsibilities. This makes failure behavior hard to reason about and hard to test without live CloudKit.
+**Why it matters:** `CloudKitStickyNotesCloudService` is roughly 1,500 lines and owns too many responsibilities. This makes failure behavior hard to reason about and hard to test without live CloudKit.
 
 **Files/functions involved:**
 
@@ -113,7 +155,7 @@ If persisted content changed since the draft base and differs from the draft, th
   - `CloudKitStickyNotesCloudService.importLegacyDefaultZoneNotesIfNeeded(syncEngine:)`
   - `CloudKitStickyNotesCloudService.hydrateRemoteZoneSnapshotIfNeeded()`
   - `CloudKitStickyNotesCloudService.applySentRecordZoneChanges(_:syncEngine:)`
-  - `CloudKitStickyNotesCloudService.recoverRetriableSaves(from:)`
+  - `CloudKitStickyNotesCloudService.recoverRecordSaveFailures(from:syncEngine:)`
   - `CloudKitSendBatchTracker`
   - `StickyNote.init?(record:)`
   - `StickyNote.makeRecord(zoneID:)`
@@ -126,7 +168,7 @@ If persisted content changed since the draft base and differs from the draft, th
 - `CloudKitSendBatchTracker`: owns active send-batch state, saved/deleted/conflict/retry bookkeeping, and result finalization.
 - `CloudKitErrorClassifier`: maps CloudKit errors into retry, conflict, missing zone, partial failure, and terminal failure categories.
 
-Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch tracking has been extracted into `CloudKitSendBatchTracker`, including active batch state, save/delete/conflict/retry bookkeeping, result finalization, and focused unit tests. CloudKit error interpretation has been extracted into `CloudKitErrorClassifier`, covering missing-zone checks, sent-record save/delete outcomes, unknown-item retry handling, partial-failure recovery, and terminal failures. Remote-note cache storage has been extracted into `CloudKitRemoteNoteCache`, keeping persisted/fetched remote notes normalized as clean snapshots outside the CloudKit service. Sync orchestration has also been extracted into `StickyNotesSyncCoordinator`. Continue with the larger CloudKit service split after the remaining smaller production-readiness work is handled.
+Record mapping has been extracted into `StickyNoteRecordMapper`. Send-batch tracking has been extracted into `CloudKitSendBatchTracker`, including active batch state, save/delete/conflict/bounded-retry bookkeeping, result finalization, and focused unit tests. The bounded `limitExceeded` split tree is now driven by a pure recovery executor, and batch-dependent retry admission is handled through tracker APIs shared by production and orchestration tests. CloudKit error interpretation has been extracted into `CloudKitErrorClassifier`, covering missing-zone checks, sent-record save/delete outcomes, unknown-item retry handling, per-record partial-failure recovery, explicit transient failures, and fail-closed permanent failures. Remote-note cache storage has been extracted into `CloudKitRemoteNoteCache`, keeping persisted/fetched remote notes normalized as clean snapshots outside the CloudKit service. Sync orchestration has also been extracted into `StickyNotesSyncCoordinator`. Continue with the larger CloudKit service split after the remaining smaller production-readiness work is handled.
 
 **Expected payoff:** Smaller review surface, better tests, and safer changes to sync behavior.
 

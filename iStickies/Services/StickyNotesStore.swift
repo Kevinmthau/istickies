@@ -87,6 +87,8 @@ final class StickyNotesStore: ObservableObject {
     private var hasStartedLoading = false
     private var hasLoaded = false
     private var isSynchronizing = false
+    private var pendingSyncRequest = false
+    private var pendingBlockedUploadRetry = false
     private var scheduledSyncTask: StickyNotesDelayedTask?
     private var scheduledPersistenceTask: StickyNotesDelayedTask?
     private var persistenceTask: Task<Void, Never>?
@@ -137,7 +139,8 @@ final class StickyNotesStore: ObservableObject {
             cachedCloudPersistedState = StickyNotesCloudPersistedState(
                 stateSerializationData: snapshot.cloudKitStateSerializationData,
                 accountIdentifier: snapshot.cloudAccountIdentifier,
-                remoteNotes: snapshot.cloudRemoteCache
+                remoteNotes: snapshot.cloudRemoteCache,
+                saveVerifications: snapshot.cloudSaveVerifications
             )
             await cloudService.restore(persistedState: cachedCloudPersistedState)
             applyLoadedSnapshot(snapshot)
@@ -229,6 +232,8 @@ final class StickyNotesStore: ObservableObject {
     }
 
     func updateContent(id: String, content: String) {
+        guard notesByID[id]?.content != content else { return }
+
         mutateNote(
             id: id,
             touchModifiedAt: true,
@@ -355,12 +360,6 @@ final class StickyNotesStore: ObservableObject {
             )
             return
         }
-        guard !isSynchronizing else {
-            StickyNotesLog.sync.debug(
-                "Automatic sync skipped because sync is already running reason: \(reason.rawValue, privacy: .public)"
-            )
-            return
-        }
         guard !hasLocalLoadFailure else {
             StickyNotesLog.sync.warning(
                 "Automatic sync skipped after local load failure reason: \(reason.rawValue, privacy: .public)"
@@ -375,21 +374,35 @@ final class StickyNotesStore: ObservableObject {
         await syncNow()
     }
 
-    func syncNow() async {
+    func syncNow(retryingBlockedUploads: Bool = false) async {
         guard hasLoaded else { return }
-        guard !isSynchronizing else {
-            StickyNotesLog.sync.debug("Sync request ignored because a sync is already running")
-            return
-        }
         guard !hasLocalLoadFailure else {
             StickyNotesLog.sync.warning("Sync blocked after unrecoverable local snapshot load failure")
             return
         }
+        guard !isSynchronizing else {
+            pendingSyncRequest = true
+            pendingBlockedUploadRetry = pendingBlockedUploadRetry || retryingBlockedUploads
+            StickyNotesLog.sync.debug(
+                "Sync request coalesced because a sync is already running"
+            )
+            return
+        }
 
         isSynchronizing = true
-        syncState = .syncing
         defer { isSynchronizing = false }
 
+        var shouldRetryBlockedUploads = retryingBlockedUploads || pendingBlockedUploadRetry
+        repeat {
+            pendingSyncRequest = false
+            pendingBlockedUploadRetry = false
+            await performSyncPass(retryingBlockedUploads: shouldRetryBlockedUploads)
+            shouldRetryBlockedUploads = pendingBlockedUploadRetry
+        } while pendingSyncRequest
+    }
+
+    private func performSyncPass(retryingBlockedUploads: Bool) async {
+        syncState = .syncing
         var remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness?
         StickyNotesLog.sync.info(
             """
@@ -412,7 +425,10 @@ final class StickyNotesStore: ObservableObject {
                 mergeTransition.remoteSnapshotCompleteness
             )
 
-            let outgoingChanges = syncCoordinator.outgoingChanges(from: syncLocalState)
+            let outgoingChanges = syncCoordinator.outgoingChanges(
+                from: syncLocalState,
+                retryingBlockedUploads: retryingBlockedUploads
+            )
             let syncResult = await syncCoordinator.send(outgoingChanges)
             let applicationTransition = syncCoordinator.apply(
                 syncResult: syncResult,
@@ -461,13 +477,6 @@ final class StickyNotesStore: ObservableObject {
                 error: \(error.localizedDescription, privacy: .private)
                 """
             )
-
-            if let delay = syncCoordinator.retrySyncDelay(
-                hasPendingCloudChanges: hasPendingCloudChanges
-            ) {
-                StickyNotesLog.sync.info("Scheduling sync retry delaySeconds: \(delay, privacy: .public)")
-                scheduleCloudSync(after: delay)
-            }
         }
     }
 
@@ -484,6 +493,7 @@ final class StickyNotesStore: ObservableObject {
         mutation(&updated)
         if markNeedsCloudUpload {
             updated.needsCloudUpload = true
+            updated.cloudUploadBlock = nil
         }
         if touchModifiedAt {
             updated.lastModified = Date()
@@ -498,7 +508,7 @@ final class StickyNotesStore: ObservableObject {
     }
 
     private var hasPendingCloudChanges: Bool {
-        notesByID.values.contains(where: \.needsCloudUpload) || !pendingDeletionIDs.isEmpty
+        notesByID.values.contains(where: \.shouldAttemptCloudUpload) || !pendingDeletionIDs.isEmpty
     }
 
     private var dirtyNoteCount: Int {
@@ -718,7 +728,8 @@ final class StickyNotesStore: ObservableObject {
             lastSuccessfulCloudSync: lastSuccessfulCloudSync,
             cloudKitStateSerializationData: cachedCloudPersistedState.stateSerializationData,
             cloudAccountIdentifier: cachedCloudPersistedState.accountIdentifier,
-            cloudRemoteCache: cachedCloudPersistedState.remoteNotes
+            cloudRemoteCache: cachedCloudPersistedState.remoteNotes,
+            cloudSaveVerifications: cachedCloudPersistedState.saveVerifications
         )
         let previousPersistenceTask = persistenceTask
         let fileStore = fileStore

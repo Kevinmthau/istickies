@@ -7,6 +7,42 @@ struct StickyNoteFrame: Codable, Equatable, Sendable {
     var height: Double
 }
 
+enum StickyNoteCloudUploadBlock: String, Codable, Equatable, Sendable {
+    case permanentlyRejected
+}
+
+struct CloudSaveVerification: Codable, Equatable, Sendable {
+    var noteID: String
+    var content: String
+    var lastModified: Date
+
+    init(note: StickyNote) {
+        noteID = note.id
+        content = note.content
+        lastModified = StickyNoteCloudTimestamp.canonicalized(note.lastModified)
+    }
+
+    func matches(_ note: StickyNote) -> Bool {
+        content == note.content
+            && StickyNoteCloudTimestamp.representsSameInstant(lastModified, note.lastModified)
+    }
+}
+
+enum StickyNoteCloudTimestamp {
+    // CloudKit represents Date/Time fields as milliseconds since the Unix epoch. A server
+    // round trip can therefore remove sub-millisecond precision from a Swift Date.
+    private static let maximumRoundTripDelta: TimeInterval = 0.001
+
+    static func canonicalized(_ date: Date) -> Date {
+        let milliseconds = (date.timeIntervalSince1970 * 1_000).rounded()
+        return Date(timeIntervalSince1970: milliseconds / 1_000)
+    }
+
+    static func representsSameInstant(_ lhs: Date, _ rhs: Date) -> Bool {
+        abs(lhs.timeIntervalSince1970 - rhs.timeIntervalSince1970) < maximumRoundTripDelta
+    }
+}
+
 struct StickyNote: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var content: String
@@ -17,6 +53,7 @@ struct StickyNote: Identifiable, Codable, Equatable, Sendable {
     var isOpen: Bool
     var preferredFrame: StickyNoteFrame?
     var needsCloudUpload: Bool
+    var cloudUploadBlock: StickyNoteCloudUploadBlock?
     var cloudKitSystemFieldsData: Data?
     var cloudRevision: String?
 
@@ -30,6 +67,7 @@ struct StickyNote: Identifiable, Codable, Equatable, Sendable {
         isOpen: Bool = true,
         preferredFrame: StickyNoteFrame? = nil,
         needsCloudUpload: Bool = true,
+        cloudUploadBlock: StickyNoteCloudUploadBlock? = nil,
         cloudKitSystemFieldsData: Data? = nil,
         cloudRevision: String? = nil
     ) {
@@ -42,6 +80,7 @@ struct StickyNote: Identifiable, Codable, Equatable, Sendable {
         self.isOpen = isOpen
         self.preferredFrame = preferredFrame
         self.needsCloudUpload = needsCloudUpload
+        self.cloudUploadBlock = cloudUploadBlock
         self.cloudKitSystemFieldsData = cloudKitSystemFieldsData
         self.cloudRevision = cloudRevision
     }
@@ -71,9 +110,14 @@ struct StickyNote: Identifiable, Codable, Equatable, Sendable {
         return String(collapsed.prefix(80))
     }
 
+    var shouldAttemptCloudUpload: Bool {
+        needsCloudUpload && cloudUploadBlock == nil
+    }
+
     func markedClean() -> StickyNote {
         var copy = self
         copy.needsCloudUpload = false
+        copy.cloudUploadBlock = nil
         return copy
     }
 
@@ -108,7 +152,7 @@ enum StickyNoteOrdering {
 }
 
 struct StickyNotesSnapshot: Codable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int = Self.currentSchemaVersion
     var notes: [StickyNote] = []
@@ -117,6 +161,7 @@ struct StickyNotesSnapshot: Codable, Sendable {
     var cloudKitStateSerializationData: Data?
     var cloudAccountIdentifier: String?
     var cloudRemoteCache: [StickyNote] = []
+    var cloudSaveVerifications: [CloudSaveVerification] = []
 
     init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -125,7 +170,8 @@ struct StickyNotesSnapshot: Codable, Sendable {
         lastSuccessfulCloudSync: Date? = nil,
         cloudKitStateSerializationData: Data? = nil,
         cloudAccountIdentifier: String? = nil,
-        cloudRemoteCache: [StickyNote] = []
+        cloudRemoteCache: [StickyNote] = [],
+        cloudSaveVerifications: [CloudSaveVerification] = []
     ) {
         self.schemaVersion = schemaVersion
         self.notes = notes
@@ -134,6 +180,7 @@ struct StickyNotesSnapshot: Codable, Sendable {
         self.cloudKitStateSerializationData = cloudKitStateSerializationData
         self.cloudAccountIdentifier = cloudAccountIdentifier
         self.cloudRemoteCache = cloudRemoteCache
+        self.cloudSaveVerifications = cloudSaveVerifications
     }
 
     init(from decoder: Decoder) throws {
@@ -151,6 +198,10 @@ struct StickyNotesSnapshot: Codable, Sendable {
         cloudAccountIdentifier = try container.decodeIfPresent(String.self, forKey: .cloudAccountIdentifier)
         cloudRemoteCache = try container.decodeIfPresent([StickyNote].self, forKey: .cloudRemoteCache)
             ?? []
+        cloudSaveVerifications = try container.decodeIfPresent(
+            [CloudSaveVerification].self,
+            forKey: .cloudSaveVerifications
+        ) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -162,6 +213,10 @@ struct StickyNotesSnapshot: Codable, Sendable {
         try container.encodeIfPresent(cloudKitStateSerializationData, forKey: .cloudKitStateSerializationData)
         try container.encodeIfPresent(cloudAccountIdentifier, forKey: .cloudAccountIdentifier)
         try container.encode(cloudRemoteCache, forKey: .cloudRemoteCache)
+        try container.encode(
+            cloudSaveVerifications,
+            forKey: .cloudSaveVerifications
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -172,6 +227,7 @@ struct StickyNotesSnapshot: Codable, Sendable {
         case cloudKitStateSerializationData
         case cloudAccountIdentifier
         case cloudRemoteCache
+        case cloudSaveVerifications
     }
 }
 
@@ -179,14 +235,49 @@ struct StickyNotesCloudPersistedState: Codable, Equatable, Sendable {
     var stateSerializationData: Data?
     var accountIdentifier: String?
     var remoteNotes: [StickyNote]
+    var saveVerifications: [CloudSaveVerification]
 
     init(
         stateSerializationData: Data? = nil,
         accountIdentifier: String? = nil,
-        remoteNotes: [StickyNote] = []
+        remoteNotes: [StickyNote] = [],
+        saveVerifications: [CloudSaveVerification] = []
     ) {
         self.stateSerializationData = stateSerializationData
         self.accountIdentifier = accountIdentifier
         self.remoteNotes = remoteNotes
+        self.saveVerifications = saveVerifications
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        stateSerializationData = try container.decodeIfPresent(
+            Data.self,
+            forKey: .stateSerializationData
+        )
+        accountIdentifier = try container.decodeIfPresent(String.self, forKey: .accountIdentifier)
+        remoteNotes = try container.decodeIfPresent([StickyNote].self, forKey: .remoteNotes) ?? []
+        saveVerifications = try container.decodeIfPresent(
+            [CloudSaveVerification].self,
+            forKey: .saveVerifications
+        ) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(stateSerializationData, forKey: .stateSerializationData)
+        try container.encodeIfPresent(accountIdentifier, forKey: .accountIdentifier)
+        try container.encode(remoteNotes, forKey: .remoteNotes)
+        try container.encode(
+            saveVerifications,
+            forKey: .saveVerifications
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case stateSerializationData
+        case accountIdentifier
+        case remoteNotes
+        case saveVerifications
     }
 }

@@ -57,7 +57,8 @@ struct StickyNotesSyncCoordinator: Sendable {
             localNotes: localState.notes,
             remoteNotes: remoteSnapshot.notes,
             pendingDeletionIDs: localState.pendingDeletionIDs,
-            remoteSnapshotCompleteness: remoteSnapshot.completeness
+            remoteSnapshotCompleteness: remoteSnapshot.completeness,
+            saveVerifications: remoteSnapshot.saveVerifications
         )
 
         var mergedNotes = StickyNote.enforcingYellow(mergeOutcome.notes)
@@ -86,9 +87,12 @@ struct StickyNotesSyncCoordinator: Sendable {
     }
 
     func outgoingChanges(
-        from localState: StickyNotesSyncLocalState
+        from localState: StickyNotesSyncLocalState,
+        retryingBlockedUploads: Bool = false
     ) -> StickyNotesOutgoingCloudChanges {
-        let outgoingSaves = localState.notes.filter(\.needsCloudUpload)
+        let outgoingSaves = localState.notes.filter { note in
+            retryingBlockedUploads ? note.needsCloudUpload : note.shouldAttemptCloudUpload
+        }
         return StickyNotesOutgoingCloudChanges(
             saves: outgoingSaves,
             deletions: Array(localState.pendingDeletionIDs),
@@ -116,6 +120,7 @@ struct StickyNotesSyncCoordinator: Sendable {
             CloudKit batch result savedCount: \(syncResult.savedNotes.count, privacy: .public) \
             deletedCount: \(syncResult.deletedNoteIDs.count, privacy: .public) \
             retryCount: \(syncResult.pendingNotesRequiringRetry.count, privacy: .public) \
+            rejectedCount: \(syncResult.permanentlyRejectedSaveNoteIDs.count, privacy: .public) \
             conflictCount: \(syncResult.conflicts.count, privacy: .public) \
             hasFailure: \(syncResult.failureMessage != nil, privacy: .public)
             """
@@ -182,10 +187,6 @@ struct StickyNotesSyncCoordinator: Sendable {
         hasPendingCloudChanges ? 1.0 : nil
     }
 
-    func retrySyncDelay(hasPendingCloudChanges: Bool) -> TimeInterval? {
-        hasPendingCloudChanges ? 5.0 : nil
-    }
-
     private func trustedCloudPersistedState(
         _ persistedState: StickyNotesCloudPersistedState,
         after remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness
@@ -197,7 +198,8 @@ struct StickyNotesSyncCoordinator: Sendable {
         return StickyNotesCloudPersistedState(
             stateSerializationData: persistedState.stateSerializationData,
             accountIdentifier: persistedState.accountIdentifier,
-            remoteNotes: []
+            remoteNotes: [],
+            saveVerifications: persistedState.saveVerifications
         )
     }
 

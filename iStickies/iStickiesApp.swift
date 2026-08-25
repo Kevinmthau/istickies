@@ -102,7 +102,7 @@ private struct StickyNotesCommands: Commands {
             .keyboardShortcut("0", modifiers: [.command, .control])
 
             Button("Sync Now") {
-                Task { await store.syncNow() }
+                Task { await store.syncNow(retryingBlockedUploads: true) }
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
 

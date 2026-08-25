@@ -28,9 +28,14 @@ enum StickyNotesMergeEngine {
         localNotes: [StickyNote],
         remoteNotes: [StickyNote],
         pendingDeletionIDs: Set<String>,
-        remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness = .complete
+        remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness = .complete,
+        saveVerifications: [CloudSaveVerification] = []
     ) -> StickyNotesMergeOutcome {
         var unmatchedLocal = Dictionary(uniqueKeysWithValues: localNotes.map { ($0.id, $0) })
+        let saveVerificationsByNoteID = Dictionary(
+            saveVerifications.map { ($0.noteID, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
         var mergedNotes: [StickyNote] = []
 
         for remoteNote in remoteNotes {
@@ -44,12 +49,64 @@ enum StickyNotesMergeEngine {
                 continue
             }
 
+            if let verification = saveVerificationsByNoteID[localNote.id] {
+                switch remoteSnapshotCompleteness {
+                case .partial, .unavailable:
+                    mergedNotes.append(localNote)
+                    continue
+                case .complete:
+                    if verification.matches(remoteNote) {
+                        if verification.matches(localNote) {
+                            mergedNotes.append(
+                                remoteReplacement(
+                                    from: remoteNote,
+                                    preservingWindowStateFrom: localNote
+                                )
+                            )
+                        } else {
+                            mergedNotes.append(
+                                refreshedLocalNote(
+                                    localNote,
+                                    cloudMetadataSource: remoteNote
+                                )
+                            )
+                        }
+                        continue
+                    }
+
+                    if matchesUploadedCloudPayload(localNote, remoteNote) {
+                        mergedNotes.append(
+                            remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote)
+                        )
+                    } else {
+                        mergedNotes.append(
+                            remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote)
+                        )
+                        mergedNotes.append(makeConflictCopy(from: localNote))
+                    }
+                    continue
+                case .remoteReset:
+                    mergedNotes.append(localNote)
+                    continue
+                }
+            }
+
             if localNote.needsCloudUpload
                 && remoteChangedSinceLocalBase(localNote: localNote, remoteNote: remoteNote)
                 && hasSharedCloudContentChanges(localNote, remoteNote)
             {
                 mergedNotes.append(remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote))
                 mergedNotes.append(makeConflictCopy(from: localNote))
+                continue
+            }
+
+            if localNote.needsCloudUpload,
+               remoteSnapshotCompleteness == .complete,
+               matchesUploadedCloudPayload(localNote, remoteNote)
+            {
+                mergedNotes.append(
+                    remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote)
+                )
                 continue
             }
 
@@ -62,10 +119,16 @@ enum StickyNotesMergeEngine {
             }
         }
 
-        for remainingLocalNote in unmatchedLocal.values
-        where remainingLocalNote.needsCloudUpload || !remoteSnapshotCompleteness.allowsRemoteDeletions
-        {
-            mergedNotes.append(remainingLocalNote)
+        for remainingLocalNote in unmatchedLocal.values {
+            if saveVerificationsByNoteID[remainingLocalNote.id] != nil,
+               remoteSnapshotCompleteness == .complete
+            {
+                mergedNotes.append(remainingLocalNote.resettingCloudKitSystemFields())
+            } else if remainingLocalNote.needsCloudUpload
+                || !remoteSnapshotCompleteness.allowsRemoteDeletions
+            {
+                mergedNotes.append(remainingLocalNote)
+            }
         }
 
         return StickyNotesMergeOutcome(notes: mergedNotes)
@@ -95,6 +158,14 @@ enum StickyNotesMergeEngine {
         for pendingNote in syncResult.pendingNotesRequiringRetry {
             applyPendingRetryNote(
                 pendingNote,
+                in: &notes,
+                sentNotesByID: sentNotesByID
+            )
+        }
+
+        for rejectedNoteID in syncResult.permanentlyRejectedSaveNoteIDs {
+            applyPermanentlyRejectedNote(
+                noteID: rejectedNoteID,
                 in: &notes,
                 sentNotesByID: sentNotesByID
             )
@@ -152,13 +223,31 @@ enum StickyNotesMergeEngine {
         notes[index] = refreshedLocalNote(currentNote, cloudMetadataSource: pendingNote)
     }
 
+    private static func applyPermanentlyRejectedNote(
+        noteID: String,
+        in notes: inout [StickyNote],
+        sentNotesByID: [String: StickyNote]
+    ) {
+        guard let index = notes.firstIndex(where: { $0.id == noteID }),
+              sentNotesByID[noteID] != nil
+        else {
+            return
+        }
+
+        // A local edit made after the send is a different record, so let it try again. Otherwise
+        // keep the rejected payload dirty and merge-protected while blocking automatic retries.
+        guard !hasCloudChangesSinceSend(notes[index], sentNotesByID: sentNotesByID) else { return }
+
+        notes[index].needsCloudUpload = true
+        notes[index].cloudUploadBlock = .permanentlyRejected
+    }
+
     private static func hasCloudChangesSinceSend(
         _ note: StickyNote,
         sentNotesByID: [String: StickyNote]
     ) -> Bool {
         guard let sentNote = sentNotesByID[note.id] else { return false }
         return note.content != sentNote.content
-            || note.titleOverride != sentNote.titleOverride
             || note.lastModified != sentNote.lastModified
     }
 
@@ -179,8 +268,20 @@ enum StickyNotesMergeEngine {
         _ localNote: StickyNote,
         _ remoteNote: StickyNote
     ) -> Bool {
+        // `titleOverride` is never synced, so remote notes always decode it as nil. Comparing it
+        // here would report a conflict on every sync for locally retitled notes.
         localNote.content != remoteNote.content
-            || localNote.titleOverride != remoteNote.titleOverride
+    }
+
+    private static func matchesUploadedCloudPayload(
+        _ localNote: StickyNote,
+        _ remoteNote: StickyNote
+    ) -> Bool {
+        localNote.content == remoteNote.content
+            && StickyNoteCloudTimestamp.representsSameInstant(
+                localNote.lastModified,
+                remoteNote.lastModified
+            )
     }
 
     private static func refreshedLocalNote(
@@ -200,6 +301,7 @@ enum StickyNotesMergeEngine {
     ) -> StickyNote {
         var merged = remote.markedClean()
         merged.createdAt = min(local.createdAt, remote.createdAt)
+        merged.titleOverride = local.titleOverride
         merged.isOpen = local.isOpen
         merged.preferredFrame = local.preferredFrame
         return merged
@@ -215,6 +317,7 @@ enum StickyNotesMergeEngine {
             isOpen: true,
             preferredFrame: note.preferredFrame,
             needsCloudUpload: true,
+            cloudUploadBlock: note.cloudUploadBlock,
             cloudKitSystemFieldsData: nil,
             cloudRevision: nil
         )
