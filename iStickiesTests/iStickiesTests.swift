@@ -992,6 +992,156 @@ struct iStickiesTests {
         #expect(deleteClassification.kind == .terminal)
     }
 
+    @Test func cloudKitErrorClassifierClassifiesSchemaRejectionsAsPermanent() {
+        let error = makeCloudKitError(.invalidArguments)
+
+        let saveClassification = CloudKitErrorClassifier.classifyRecordSaveFailure(error)
+
+        #expect(saveClassification.kind == .permanentlyRejected)
+        #expect(saveClassification.serverRecord == nil)
+    }
+
+    @Test func cloudKitRecordWriteOmitsTitleOverrideFieldMissingFromProductionSchema() {
+        let note = StickyNote(
+            id: "conflict-copy",
+            content: "Local draft",
+            titleOverride: "Conflict Copy",
+            needsCloudUpload: true
+        )
+
+        let record = StickyNoteRecordMapper.record(for: note, zoneID: .default)
+
+        #expect(record.allKeys().contains("titleOverride") == false)
+        #expect(record["content"] as? String == "Local draft")
+    }
+
+    @Test func cloudKitRecordIgnoresRemoteTitleOverride() throws {
+        let recordID = CKRecord.ID(recordName: "remote-note", zoneID: .default)
+        let record = CKRecord(recordType: StickyNoteRecordMapper.recordType, recordID: recordID)
+        record["content"] = "Remote note" as CKRecordValue
+        record["lastModified"] = Date(timeIntervalSince1970: 20) as CKRecordValue
+        record["titleOverride"] = "Remote Title" as CKRecordValue
+
+        let note = try #require(StickyNoteRecordMapper.note(from: record))
+
+        #expect(note.titleOverride == nil)
+    }
+
+    @Test func cloudKitSendBatchTrackerResolvesPermanentlyRejectedSaves() throws {
+        var tracker = CloudKitSendBatchTracker()
+
+        tracker.begin(expectedSaveNoteIDs: ["rejected-note"], expectedDeleteNoteIDs: [])
+        tracker.markPermanentlyRejectedSave(
+            noteID: "rejected-note",
+            message: "Cannot create or modify field 'titleOverride'"
+        )
+
+        let result = tracker.finalize()
+
+        #expect(result.permanentlyRejectedSaveNoteIDs == ["rejected-note"])
+        #expect(result.savedNotes.isEmpty)
+        #expect(result.pendingNotesRequiringRetry.isEmpty)
+        #expect(result.failureMessage == "Cannot create or modify field 'titleOverride'")
+    }
+
+    @Test func syncApplyStopsResendingPermanentlyRejectedNotes() throws {
+        let sentNote = StickyNote(
+            id: "rejected-note",
+            content: "Local draft",
+            titleOverride: "Conflict Copy",
+            lastModified: Date(timeIntervalSince1970: 30),
+            needsCloudUpload: true
+        )
+
+        let outcome = StickyNotesMergeEngine.apply(
+            syncResult: CloudSyncBatchResult(permanentlyRejectedSaveNoteIDs: [sentNote.id]),
+            to: [sentNote],
+            pendingDeletionIDs: [],
+            sentNotesByID: [sentNote.id: sentNote]
+        )
+        let rejectedNote = try #require(outcome.notes.first)
+
+        #expect(rejectedNote.needsCloudUpload == false)
+        #expect(rejectedNote.content == "Local draft")
+        #expect(rejectedNote.titleOverride == "Conflict Copy")
+    }
+
+    @Test func syncApplyKeepsPermanentlyRejectedNotesDirtyAfterNewerLocalEdits() throws {
+        let sentNote = StickyNote(
+            id: "rejected-note",
+            content: "Local draft",
+            lastModified: Date(timeIntervalSince1970: 30),
+            needsCloudUpload: true
+        )
+        var editedNote = sentNote
+        editedNote.content = "Second draft"
+        editedNote.lastModified = Date(timeIntervalSince1970: 60)
+
+        let outcome = StickyNotesMergeEngine.apply(
+            syncResult: CloudSyncBatchResult(permanentlyRejectedSaveNoteIDs: [sentNote.id]),
+            to: [editedNote],
+            pendingDeletionIDs: [],
+            sentNotesByID: [sentNote.id: sentNote]
+        )
+        let retriedNote = try #require(outcome.notes.first)
+
+        #expect(retriedNote.needsCloudUpload)
+        #expect(retriedNote.content == "Second draft")
+    }
+
+    @Test func mergeKeepsLocalTitleOverrideWhenRemoteNoteWins() throws {
+        let localNote = StickyNote(
+            id: "shared-note",
+            content: "Older",
+            titleOverride: "Conflict Copy",
+            lastModified: Date(timeIntervalSince1970: 10),
+            needsCloudUpload: false
+        )
+        let remoteNote = StickyNote(
+            id: "shared-note",
+            content: "Newer",
+            lastModified: Date(timeIntervalSince1970: 20),
+            needsCloudUpload: false
+        )
+
+        let outcome = StickyNotesMergeEngine.merge(
+            localNotes: [localNote],
+            remoteNotes: [remoteNote],
+            pendingDeletionIDs: []
+        )
+        let mergedNote = try #require(outcome.notes.first)
+
+        #expect(mergedNote.content == "Newer")
+        #expect(mergedNote.titleOverride == "Conflict Copy")
+    }
+
+    @Test func mergeDoesNotForkConflictCopiesForLocalOnlyTitleOverrides() {
+        let localNote = StickyNote(
+            id: "shared-note",
+            content: "Same content",
+            titleOverride: "Conflict Copy",
+            lastModified: Date(timeIntervalSince1970: 20),
+            needsCloudUpload: true,
+            cloudRevision: "local-revision"
+        )
+        let remoteNote = StickyNote(
+            id: "shared-note",
+            content: "Same content",
+            lastModified: Date(timeIntervalSince1970: 30),
+            needsCloudUpload: false,
+            cloudRevision: "remote-revision"
+        )
+
+        let outcome = StickyNotesMergeEngine.merge(
+            localNotes: [localNote],
+            remoteNotes: [remoteNote],
+            pendingDeletionIDs: []
+        )
+
+        #expect(outcome.notes.count == 1)
+        #expect(outcome.notes.contains { $0.title == "Conflict Copy" })
+    }
+
     @Test func cloudKitSendBatchTrackerFinalizesResolvedBatch() throws {
         var tracker = CloudKitSendBatchTracker()
         let savedNote = StickyNote(

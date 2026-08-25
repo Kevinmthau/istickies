@@ -100,6 +100,14 @@ enum StickyNotesMergeEngine {
             )
         }
 
+        for rejectedNoteID in syncResult.permanentlyRejectedSaveNoteIDs {
+            applyPermanentlyRejectedNote(
+                noteID: rejectedNoteID,
+                in: &notes,
+                sentNotesByID: sentNotesByID
+            )
+        }
+
         for conflict in syncResult.conflicts {
             guard let localNote = notes.first(where: { $0.id == conflict.localNoteID }) else { continue }
             replace(
@@ -152,13 +160,27 @@ enum StickyNotesMergeEngine {
         notes[index] = refreshedLocalNote(currentNote, cloudMetadataSource: pendingNote)
     }
 
+    private static func applyPermanentlyRejectedNote(
+        noteID: String,
+        in notes: inout [StickyNote],
+        sentNotesByID: [String: StickyNote]
+    ) {
+        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
+
+        // A local edit made after the send is a different record, so let it try again. Otherwise
+        // stop resending a record the server refuses; leaving it dirty spins the retry loop and
+        // re-raises the same sync alert forever.
+        guard !hasCloudChangesSinceSend(notes[index], sentNotesByID: sentNotesByID) else { return }
+
+        notes[index] = notes[index].markedClean()
+    }
+
     private static func hasCloudChangesSinceSend(
         _ note: StickyNote,
         sentNotesByID: [String: StickyNote]
     ) -> Bool {
         guard let sentNote = sentNotesByID[note.id] else { return false }
         return note.content != sentNote.content
-            || note.titleOverride != sentNote.titleOverride
             || note.lastModified != sentNote.lastModified
     }
 
@@ -179,8 +201,9 @@ enum StickyNotesMergeEngine {
         _ localNote: StickyNote,
         _ remoteNote: StickyNote
     ) -> Bool {
+        // `titleOverride` is never synced, so remote notes always decode it as nil. Comparing it
+        // here would report a conflict on every sync for locally retitled notes.
         localNote.content != remoteNote.content
-            || localNote.titleOverride != remoteNote.titleOverride
     }
 
     private static func refreshedLocalNote(
@@ -200,6 +223,7 @@ enum StickyNotesMergeEngine {
     ) -> StickyNote {
         var merged = remote.markedClean()
         merged.createdAt = min(local.createdAt, remote.createdAt)
+        merged.titleOverride = local.titleOverride
         merged.isOpen = local.isOpen
         merged.preferredFrame = local.preferredFrame
         return merged

@@ -116,6 +116,7 @@ struct StickyNotesSyncCoordinator: Sendable {
             CloudKit batch result savedCount: \(syncResult.savedNotes.count, privacy: .public) \
             deletedCount: \(syncResult.deletedNoteIDs.count, privacy: .public) \
             retryCount: \(syncResult.pendingNotesRequiringRetry.count, privacy: .public) \
+            rejectedCount: \(syncResult.permanentlyRejectedSaveNoteIDs.count, privacy: .public) \
             conflictCount: \(syncResult.conflicts.count, privacy: .public) \
             hasFailure: \(syncResult.failureMessage != nil, privacy: .public)
             """

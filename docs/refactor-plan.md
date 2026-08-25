@@ -8,6 +8,8 @@ The previous highest production data-loss risk was that an empty, unavailable, p
 
 The previous biggest remaining correctness risk was cross-device conflict handling: an active editor draft could ignore a remote update and later flush over it without checking whether the persisted base changed. That P0 draft safety fix is now implemented: editor drafts track their persisted base content, delayed saves use a checked store API, and stale draft flushes create a conflict copy instead of overwriting the current primary note.
 
+A production-only sync failure was also fixed: the app wrote a `titleOverride` field that was never deployed to the production CloudKit schema, so the first note that forked into a `Conflict Copy` was rejected by the server on every retry. The field is now local device state, and permanently rejected record saves are dropped from the pending queue instead of looping.
+
 The current hardening pass also implemented the remaining highest-risk P0/P1 app fixes: local snapshot recovery with backup/quarantine behavior, CloudKit persisted account/cache state, same-account remote-zone reset reupload behavior, CloudKit revision-based conflict detection for tagged notes, and the macOS window iteration crash fix.
 
 Structured observability is now in place for the sync and persistence paths. The app uses content-free `OSLog` categories for local load/save recovery, snapshot completeness, CloudKit account changes, remote-zone resets, retry/conflict counts, and persistence failures.
@@ -99,6 +101,34 @@ If persisted content changed since the draft base and differs from the draft, th
 **Expected payoff:** Prevents silent cross-device overwrite during active typing.
 
 **Implementation scope:** medium, completed.
+
+### P0: Undeployed CloudKit fields wedge production sync
+
+**Status:** Implemented. `titleOverride` is now device-local state that is never written to or read from CloudKit, and `invalidArguments` record-save failures are classified as permanent rejections that are dropped from the pending queue instead of retried forever.
+
+**Why it mattered:** `StickyNoteRecordMapper.write(_:to:)` deliberately clears every field that is missing from the deployed production schema (`color`, `createdAt`, `isOpen`, `frame*`), but it still wrote `titleOverride` whenever the note had one. The only producer of a non-nil `titleOverride` is the `"Conflict Copy"` marker set by `StickyNotesMergeEngine.makeConflictCopy(from:)` and `StickyNotesStore.makeDraftConflictCopy(from:content:)`, so the mismatch stayed invisible until a sync conflict forked a note. The production save then failed with `Cannot create or modify field 'titleOverride' in record 'StickyNote' in production schema`. Because the failure was classified as `.terminal`, the note kept `needsCloudUpload = true`, the pending record-zone change stayed queued, and `retrySyncDelay` rescheduled the same doomed save every five seconds, re-raising the sync alert indefinitely.
+
+**Files/functions involved:**
+
+- `iStickies/Services/StickyNoteRecordMapper.swift`
+  - `StickyNoteRecordMapper.note(from:)`
+  - `StickyNoteRecordMapper.write(_:to:)`
+- `iStickies/Services/StickyNotesMergeEngine.swift`
+  - `StickyNotesMergeEngine.apply(syncResult:to:pendingDeletionIDs:sentNotesByID:)`
+  - `StickyNotesMergeEngine.remoteReplacement(from:preservingWindowStateFrom:)`
+  - `StickyNotesMergeEngine.hasSharedCloudContentChanges(_:_:)`
+- `iStickies/Services/CloudKitErrorClassifier.swift`
+  - `CloudKitErrorClassifier.classifyRecordSaveFailure(_:)`
+- `iStickies/Services/CloudKitSendBatchTracker.swift`
+  - `CloudKitSendBatchTracker.markPermanentlyRejectedSave(noteID:message:)`
+- `iStickies/Services/StickyNotesCloudService.swift`
+  - `CloudKitStickyNotesCloudService.applySentRecordZoneChanges(_:syncEngine:)`
+
+**Implemented behavior:** `titleOverride` joins `isOpen` and `preferredFrame` as local device state: it is cleared on write, decoded as `nil`, preserved across remote replacement, and excluded from cloud-content comparisons so a locally retitled note no longer looks like a conflict on every sync. Separately, a `.permanentlyRejected` save classification removes the record from `CKSyncEngine` pending state, drops it from the in-flight note map, and marks the note clean unless it was edited after the send, so one poisoned record can no longer spin the retry loop or block the rest of the batch. The failure message is still surfaced once per batch.
+
+**Follow-up:** If per-note titles should sync across devices, add `titleOverride` to the `StickyNote` record type in CloudKit Dashboard, deploy the schema to production, and only then reinstate the read/write in `StickyNoteRecordMapper`.
+
+**Implementation scope:** small, completed.
 
 ### P1: CloudKit service is the main architectural bottleneck
 

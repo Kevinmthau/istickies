@@ -65,7 +65,9 @@ enum StickyNoteRecordMapper {
         return StickyNote(
             id: record.recordID.recordName,
             content: content,
-            titleOverride: record[StickyNoteRecordField.titleOverride] as? String,
+            // `titleOverride` is device-local state; the deployed production schema does not
+            // declare the field, so it is never read from or written to CloudKit.
+            titleOverride: nil,
             color: color,
             createdAt: createdAt,
             lastModified: lastModified,
@@ -89,14 +91,12 @@ enum StickyNoteRecordMapper {
 
     static func write(_ note: StickyNote, to record: CKRecord) {
         record[StickyNoteRecordField.content] = note.content as CKRecordValue
-        if let titleOverride = note.titleOverride, !titleOverride.isEmpty {
-            record[StickyNoteRecordField.titleOverride] = titleOverride as CKRecordValue
-        } else {
-            record[StickyNoteRecordField.titleOverride] = nil
-        }
 
         // Keep writes compatible with the deployed production schema. Shared CloudKit records
-        // only store note content metadata; window visibility and frame are local device state.
+        // only store note content metadata; the title override, window visibility, and frame are
+        // local device state. Writing an undeclared field (such as `titleOverride`) makes the
+        // production server reject the whole record save with `invalidArguments`.
+        record[StickyNoteRecordField.titleOverride] = nil
         record[StickyNoteRecordField.color] = nil
         record[StickyNoteRecordField.createdAt] = nil
         record[StickyNoteRecordField.lastModified] = note.lastModified as CKRecordValue

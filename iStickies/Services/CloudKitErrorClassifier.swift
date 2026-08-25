@@ -5,6 +5,10 @@ enum CloudKitRecordSaveFailureKind: Equatable {
     case missingZone
     case conflict
     case unknownItemRetry
+    /// The server refused the record itself (for example a field that is missing from the
+    /// deployed schema). Resending the same record can never succeed, so it must be dropped
+    /// from the pending queue instead of retried forever.
+    case permanentlyRejected
     case terminal
 }
 
@@ -63,6 +67,12 @@ enum CloudKitErrorClassifier {
         case .unknownItem:
             return CloudKitRecordSaveFailureClassification(
                 kind: .unknownItemRetry,
+                serverRecord: nil,
+                message: message
+            )
+        case .invalidArguments:
+            return CloudKitRecordSaveFailureClassification(
+                kind: .permanentlyRejected,
                 serverRecord: nil,
                 message: message
             )

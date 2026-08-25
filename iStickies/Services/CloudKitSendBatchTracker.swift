@@ -51,6 +51,16 @@ struct CloudKitSendBatchTracker {
         self.activeContext = activeContext
     }
 
+    mutating func markPermanentlyRejectedSave(noteID: String, message: String) {
+        guard var activeContext else { return }
+        guard activeContext.expectedSaveNoteIDs.contains(noteID) else { return }
+
+        activeContext.permanentlyRejectedSaveNoteIDs.insert(noteID)
+        activeContext.unresolvedSaveNoteIDs.remove(noteID)
+        activeContext.failureMessage = activeContext.failureMessage ?? message
+        self.activeContext = activeContext
+    }
+
     mutating func markPendingSaveForRetry(_ note: StickyNote) {
         guard var activeContext else { return }
         guard activeContext.expectedSaveNoteIDs.contains(note.id) else { return }
@@ -68,6 +78,7 @@ struct CloudKitSendBatchTracker {
             savedNotes: Array(activeContext.savedNotesByID.values),
             deletedNoteIDs: Array(activeContext.deletedNoteIDs).sorted(),
             pendingNotesRequiringRetry: Array(activeContext.pendingNotesRequiringRetryByID.values),
+            permanentlyRejectedSaveNoteIDs: activeContext.permanentlyRejectedSaveNoteIDs.sorted(),
             conflicts: activeContext.conflictsByNoteID.keys.sorted().compactMap { noteID in
                 guard let remoteNote = activeContext.conflictsByNoteID[noteID] else {
                     return nil
@@ -98,6 +109,7 @@ private struct CloudKitSendBatchContext {
     var savedNotesByID: [String: StickyNote] = [:]
     var deletedNoteIDs: Set<String> = []
     var pendingNotesRequiringRetryByID: [String: StickyNote] = [:]
+    var permanentlyRejectedSaveNoteIDs: Set<String> = []
     var conflictsByNoteID: [String: StickyNote] = [:]
     var failureMessage: String?
     var unresolvedSaveNoteIDs: Set<String>

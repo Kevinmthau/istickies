@@ -14,6 +14,7 @@ struct CloudSyncBatchResult: Sendable {
     var savedNotes: [StickyNote] = []
     var deletedNoteIDs: [String] = []
     var pendingNotesRequiringRetry: [StickyNote] = []
+    var permanentlyRejectedSaveNoteIDs: [String] = []
     var conflicts: [CloudSyncConflict] = []
     var failureMessage: String?
 }
@@ -769,6 +770,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         var deletedRecordCount = 0
         var conflictCount = 0
         var retryCount = 0
+        var rejectedSaveCount = 0
         var failedSaveCount = 0
         var failedDeleteCount = 0
 
@@ -832,6 +834,22 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                     sendBatchTracker.markFailure(classification.message)
                     failedSaveCount += 1
                 }
+            case .permanentlyRejected:
+                // The server will refuse this record every time it is sent, so drop it from the
+                // pending queue instead of letting it wedge the sync loop.
+                syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                pendingNotesByID.removeValue(forKey: noteID)
+                sendBatchTracker.markPermanentlyRejectedSave(
+                    noteID: noteID,
+                    message: classification.message
+                )
+                rejectedSaveCount += 1
+                StickyNotesLog.cloudKit.error(
+                    """
+                    CloudKit permanently rejected a record save noteID: \(noteID, privacy: .public) \
+                    error: \(classification.message, privacy: .private)
+                    """
+                )
             case .terminal:
                 sendBatchTracker.markFailure(classification.message)
                 failedSaveCount += 1
@@ -865,6 +883,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             deletedRecordCount,
             conflictCount,
             retryCount,
+            rejectedSaveCount,
             failedSaveCount,
             failedDeleteCount
         ) {
@@ -874,6 +893,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                 deletedCount: \(deletedRecordCount, privacy: .public) \
                 conflictCount: \(conflictCount, privacy: .public) \
                 retryCount: \(retryCount, privacy: .public) \
+                rejectedSaveCount: \(rejectedSaveCount, privacy: .public) \
                 failedSaveCount: \(failedSaveCount, privacy: .public) \
                 failedDeleteCount: \(failedDeleteCount, privacy: .public)
                 """
