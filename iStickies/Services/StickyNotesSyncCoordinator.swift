@@ -57,7 +57,8 @@ struct StickyNotesSyncCoordinator: Sendable {
             localNotes: localState.notes,
             remoteNotes: remoteSnapshot.notes,
             pendingDeletionIDs: localState.pendingDeletionIDs,
-            remoteSnapshotCompleteness: remoteSnapshot.completeness
+            remoteSnapshotCompleteness: remoteSnapshot.completeness,
+            saveVerifications: remoteSnapshot.saveVerifications
         )
 
         var mergedNotes = StickyNote.enforcingYellow(mergeOutcome.notes)
@@ -197,7 +198,8 @@ struct StickyNotesSyncCoordinator: Sendable {
         return StickyNotesCloudPersistedState(
             stateSerializationData: persistedState.stateSerializationData,
             accountIdentifier: persistedState.accountIdentifier,
-            remoteNotes: []
+            remoteNotes: [],
+            saveVerifications: persistedState.saveVerifications
         )
     }
 

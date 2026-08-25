@@ -139,7 +139,8 @@ final class StickyNotesStore: ObservableObject {
             cachedCloudPersistedState = StickyNotesCloudPersistedState(
                 stateSerializationData: snapshot.cloudKitStateSerializationData,
                 accountIdentifier: snapshot.cloudAccountIdentifier,
-                remoteNotes: snapshot.cloudRemoteCache
+                remoteNotes: snapshot.cloudRemoteCache,
+                saveVerifications: snapshot.cloudSaveVerifications
             )
             await cloudService.restore(persistedState: cachedCloudPersistedState)
             applyLoadedSnapshot(snapshot)
@@ -733,7 +734,8 @@ final class StickyNotesStore: ObservableObject {
             lastSuccessfulCloudSync: lastSuccessfulCloudSync,
             cloudKitStateSerializationData: cachedCloudPersistedState.stateSerializationData,
             cloudAccountIdentifier: cachedCloudPersistedState.accountIdentifier,
-            cloudRemoteCache: cachedCloudPersistedState.remoteNotes
+            cloudRemoteCache: cachedCloudPersistedState.remoteNotes,
+            cloudSaveVerifications: cachedCloudPersistedState.saveVerifications
         )
         let previousPersistenceTask = persistenceTask
         let fileStore = fileStore

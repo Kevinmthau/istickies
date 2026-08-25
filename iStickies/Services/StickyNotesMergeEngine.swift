@@ -28,9 +28,14 @@ enum StickyNotesMergeEngine {
         localNotes: [StickyNote],
         remoteNotes: [StickyNote],
         pendingDeletionIDs: Set<String>,
-        remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness = .complete
+        remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness = .complete,
+        saveVerifications: [CloudSaveVerification] = []
     ) -> StickyNotesMergeOutcome {
         var unmatchedLocal = Dictionary(uniqueKeysWithValues: localNotes.map { ($0.id, $0) })
+        let saveVerificationsByNoteID = Dictionary(
+            saveVerifications.map { ($0.noteID, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
         var mergedNotes: [StickyNote] = []
 
         for remoteNote in remoteNotes {
@@ -42,6 +47,48 @@ enum StickyNotesMergeEngine {
             guard let localNote = unmatchedLocal.removeValue(forKey: remoteNote.id) else {
                 mergedNotes.append(remoteNote.markedClean())
                 continue
+            }
+
+            if let verification = saveVerificationsByNoteID[localNote.id] {
+                switch remoteSnapshotCompleteness {
+                case .partial, .unavailable:
+                    mergedNotes.append(localNote)
+                    continue
+                case .complete:
+                    if verification.matches(remoteNote) {
+                        if verification.matches(localNote) {
+                            mergedNotes.append(
+                                remoteReplacement(
+                                    from: remoteNote,
+                                    preservingWindowStateFrom: localNote
+                                )
+                            )
+                        } else {
+                            mergedNotes.append(
+                                refreshedLocalNote(
+                                    localNote,
+                                    cloudMetadataSource: remoteNote
+                                )
+                            )
+                        }
+                        continue
+                    }
+
+                    if matchesUploadedCloudPayload(localNote, remoteNote) {
+                        mergedNotes.append(
+                            remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote)
+                        )
+                    } else {
+                        mergedNotes.append(
+                            remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote)
+                        )
+                        mergedNotes.append(makeConflictCopy(from: localNote))
+                    }
+                    continue
+                case .remoteReset:
+                    mergedNotes.append(localNote)
+                    continue
+                }
             }
 
             if localNote.needsCloudUpload
@@ -72,10 +119,16 @@ enum StickyNotesMergeEngine {
             }
         }
 
-        for remainingLocalNote in unmatchedLocal.values
-        where remainingLocalNote.needsCloudUpload || !remoteSnapshotCompleteness.allowsRemoteDeletions
-        {
-            mergedNotes.append(remainingLocalNote)
+        for remainingLocalNote in unmatchedLocal.values {
+            if saveVerificationsByNoteID[remainingLocalNote.id] != nil,
+               remoteSnapshotCompleteness == .complete
+            {
+                mergedNotes.append(remainingLocalNote.resettingCloudKitSystemFields())
+            } else if remainingLocalNote.needsCloudUpload
+                || !remoteSnapshotCompleteness.allowsRemoteDeletions
+            {
+                mergedNotes.append(remainingLocalNote)
+            }
         }
 
         return StickyNotesMergeOutcome(notes: mergedNotes)
@@ -261,6 +314,7 @@ enum StickyNotesMergeEngine {
             isOpen: true,
             preferredFrame: note.preferredFrame,
             needsCloudUpload: true,
+            cloudUploadBlock: note.cloudUploadBlock,
             cloudKitSystemFieldsData: nil,
             cloudRevision: nil
         )

@@ -5,6 +5,8 @@ enum CloudKitRecordSaveFailureKind: Equatable {
     case missingZone
     case conflict
     case unknownItemRetry
+    case batchRequestFailed
+    case limitExceeded
     /// The server refused the record itself (for example a field that is missing from the
     /// deployed schema or a violated record constraint). Resending the same payload cannot
     /// succeed, so it must be dropped from the automatic queue instead of retried forever.
@@ -37,21 +39,60 @@ enum CloudKitRetriableSavePartialFailureClassification: Equatable {
     case unhandled
 }
 
-struct CloudKitPermanentlyRejectedSaveFailure: Equatable {
+struct CloudKitAttributedSaveFailure: Equatable {
     var noteID: String
     var message: String
 }
 
-struct CloudKitPartialRecordSaveFailureClassification: Equatable {
+struct CloudKitConflictSaveFailure {
+    var noteID: String
+    var serverRecord: CKRecord?
+    var message: String
+}
+
+struct CloudKitPartialRecordSaveFailureClassification {
     var unknownItemRetryNoteIDs: [String]
-    var permanentlyRejectedSaveFailures: [CloudKitPermanentlyRejectedSaveFailure]
+    var permanentlyRejectedSaveFailures: [CloudKitAttributedSaveFailure]
+    var conflictSaveFailures: [CloudKitConflictSaveFailure]
+    var limitExceededSaveFailures: [CloudKitAttributedSaveFailure]
+    var batchRequestFailedSaveFailures: [CloudKitAttributedSaveFailure]
     var serverResponseLostNoteIDs: [String]
+    var missingZoneSaveNoteIDs: [String]
     var unhandledSaveFailureNoteIDs: [String]
     var hasUnattributedFailures: Bool
 
+    var canRetryBatchDependents: Bool {
+        !batchRequestFailedSaveFailures.isEmpty
+            && (!unknownItemRetryNoteIDs.isEmpty
+                || !permanentlyRejectedSaveFailures.isEmpty
+                || !conflictSaveFailures.isEmpty)
+            && limitExceededSaveFailures.isEmpty
+            && serverResponseLostNoteIDs.isEmpty
+            && missingZoneSaveNoteIDs.isEmpty
+            && unhandledSaveFailureNoteIDs.isEmpty
+            && !hasUnattributedFailures
+    }
+
+    var limitExceededRetrySaveFailures: [CloudKitAttributedSaveFailure] {
+        guard !limitExceededSaveFailures.isEmpty else { return [] }
+
+        var failuresByNoteID = Dictionary(
+            limitExceededSaveFailures.map { ($0.noteID, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        for failure in batchRequestFailedSaveFailures {
+            failuresByNoteID[failure.noteID] = failure
+        }
+        return failuresByNoteID.values.sorted { $0.noteID < $1.noteID }
+    }
+
     var hasUnhandledFailures: Bool {
         hasUnattributedFailures
+            || !conflictSaveFailures.isEmpty
+            || !limitExceededSaveFailures.isEmpty
+            || !batchRequestFailedSaveFailures.isEmpty
             || !serverResponseLostNoteIDs.isEmpty
+            || !missingZoneSaveNoteIDs.isEmpty
             || !unhandledSaveFailureNoteIDs.isEmpty
     }
 }
@@ -66,11 +107,22 @@ enum CloudKitErrorClassifier {
         cloudKitError(from: error)?.code == .serverResponseLost
     }
 
+    static func isLimitExceeded(_ error: Error) -> Bool {
+        cloudKitError(from: error)?.code == .limitExceeded
+    }
+
     static func classifyRecordSaveFailure(_ error: Error) -> CloudKitRecordSaveFailureClassification {
         let message = error.localizedDescription
-        guard let ckError = cloudKitError(from: error) else {
+        if error is CancellationError {
             return CloudKitRecordSaveFailureClassification(
                 kind: .retryable,
+                serverRecord: nil,
+                message: message
+            )
+        }
+        guard let ckError = cloudKitError(from: error) else {
+            return CloudKitRecordSaveFailureClassification(
+                kind: .permanentlyRejected,
                 serverRecord: nil,
                 message: message
             )
@@ -95,6 +147,18 @@ enum CloudKitErrorClassifier {
                 serverRecord: nil,
                 message: message
             )
+        case .batchRequestFailed:
+            return CloudKitRecordSaveFailureClassification(
+                kind: .batchRequestFailed,
+                serverRecord: nil,
+                message: message
+            )
+        case .limitExceeded:
+            return CloudKitRecordSaveFailureClassification(
+                kind: .limitExceeded,
+                serverRecord: nil,
+                message: message
+            )
         case .partialFailure,
              .networkUnavailable,
              .networkFailure,
@@ -102,7 +166,6 @@ enum CloudKitErrorClassifier {
              .requestRateLimited,
              .notAuthenticated,
              .operationCancelled,
-             .batchRequestFailed,
              .serverResponseLost,
              .zoneBusy,
              .accountTemporarilyUnavailable:
@@ -167,15 +230,45 @@ enum CloudKitErrorClassifier {
             return nil
         }
 
-        var unknownItemRetryNoteIDs: Set<String> = []
-        var permanentlyRejectedSaveFailures: [CloudKitPermanentlyRejectedSaveFailure] = []
-        var serverResponseLostNoteIDs: Set<String> = []
-        var unhandledSaveFailureNoteIDs: Set<String> = []
+        var attributedFailures: [(recordID: CKRecord.ID, error: Error)] = []
         var hasUnattributedFailures = false
-
         for (itemID, itemError) in partialErrors {
-            guard let recordID = itemID as? CKRecord.ID,
-                  recordID.zoneID == targetZoneID,
+            guard let recordID = itemID as? CKRecord.ID else {
+                hasUnattributedFailures = true
+                continue
+            }
+            attributedFailures.append((recordID, itemError))
+        }
+
+        return classifyRecordSaveFailures(
+            attributedFailures,
+            targetZoneID: targetZoneID,
+            pendingSaveNoteIDs: pendingSaveNoteIDs,
+            hasUnattributedFailures: hasUnattributedFailures
+        )
+    }
+
+    static func classifyRecordSaveFailures(
+        _ failures: [(recordID: CKRecord.ID, error: Error)],
+        targetZoneID: CKRecordZone.ID,
+        pendingSaveNoteIDs: Set<String>,
+        hasUnattributedFailures initialHasUnattributedFailures: Bool = false
+    ) -> CloudKitPartialRecordSaveFailureClassification {
+
+        var unknownItemRetryNoteIDs: Set<String> = []
+        var permanentlyRejectedSaveFailures: [CloudKitAttributedSaveFailure] = []
+        var conflictSaveFailures: [CloudKitConflictSaveFailure] = []
+        var limitExceededSaveFailures: [CloudKitAttributedSaveFailure] = []
+        var batchRequestFailedSaveFailures: [CloudKitAttributedSaveFailure] = []
+        var serverResponseLostNoteIDs: Set<String> = []
+        var missingZoneSaveNoteIDs: Set<String> = []
+        var unhandledSaveFailureNoteIDs: Set<String> = []
+        var hasUnattributedFailures = initialHasUnattributedFailures
+
+        for failure in failures {
+            let recordID = failure.recordID
+            let itemError = failure.error
+            guard recordID.zoneID == targetZoneID,
                   pendingSaveNoteIDs.contains(recordID.recordName)
             else {
                 hasUnattributedFailures = true
@@ -186,16 +279,40 @@ enum CloudKitErrorClassifier {
             switch classification.kind {
             case .unknownItemRetry:
                 unknownItemRetryNoteIDs.insert(recordID.recordName)
+            case .conflict:
+                conflictSaveFailures.append(
+                    CloudKitConflictSaveFailure(
+                        noteID: recordID.recordName,
+                        serverRecord: classification.serverRecord,
+                        message: classification.message
+                    )
+                )
             case .permanentlyRejected:
                 permanentlyRejectedSaveFailures.append(
-                    CloudKitPermanentlyRejectedSaveFailure(
+                    CloudKitAttributedSaveFailure(
+                        noteID: recordID.recordName,
+                        message: classification.message
+                    )
+                )
+            case .limitExceeded:
+                limitExceededSaveFailures.append(
+                    CloudKitAttributedSaveFailure(
+                        noteID: recordID.recordName,
+                        message: classification.message
+                    )
+                )
+            case .batchRequestFailed:
+                batchRequestFailedSaveFailures.append(
+                    CloudKitAttributedSaveFailure(
                         noteID: recordID.recordName,
                         message: classification.message
                     )
                 )
             case .retryable where isServerResponseLost(itemError):
                 serverResponseLostNoteIDs.insert(recordID.recordName)
-            case .missingZone, .conflict, .retryable:
+            case .missingZone:
+                missingZoneSaveNoteIDs.insert(recordID.recordName)
+            case .retryable:
                 unhandledSaveFailureNoteIDs.insert(recordID.recordName)
             }
         }
@@ -205,7 +322,15 @@ enum CloudKitErrorClassifier {
             permanentlyRejectedSaveFailures: permanentlyRejectedSaveFailures.sorted {
                 $0.noteID < $1.noteID
             },
+            conflictSaveFailures: conflictSaveFailures.sorted { $0.noteID < $1.noteID },
+            limitExceededSaveFailures: limitExceededSaveFailures.sorted {
+                $0.noteID < $1.noteID
+            },
+            batchRequestFailedSaveFailures: batchRequestFailedSaveFailures.sorted {
+                $0.noteID < $1.noteID
+            },
             serverResponseLostNoteIDs: serverResponseLostNoteIDs.sorted(),
+            missingZoneSaveNoteIDs: missingZoneSaveNoteIDs.sorted(),
             unhandledSaveFailureNoteIDs: unhandledSaveFailureNoteIDs.sorted(),
             hasUnattributedFailures: hasUnattributedFailures
         )
