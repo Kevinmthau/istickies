@@ -1101,6 +1101,30 @@ struct iStickiesTests {
         )
     }
 
+    @Test func cloudSaveVerificationPolicyQuarantinesOnlyAttemptedUnresolvedSaves() {
+        let noteIDs = CloudSaveVerificationPolicy.noteIDsRequiringVerification(
+            attemptedNoteIDs: ["attempted-and-resolved", "attempted-and-unresolved"],
+            unresolvedNoteIDs: ["attempted-and-unresolved", "unattempted-and-unresolved"]
+        )
+
+        #expect(noteIDs == ["attempted-and-unresolved"])
+    }
+
+    @Test func cloudKitScopedSaveRetryRequeuesEveryScopedRecord() {
+        let zoneID = CKRecordZone.ID(zoneName: "StickyNotes")
+        let recordIDs = [
+            CKRecord.ID(recordName: "retry-a", zoneID: zoneID),
+            CKRecord.ID(recordName: "retry-b", zoneID: zoneID),
+        ]
+
+        let pendingChanges = CloudKitScopedSaveRetry.pendingChanges(for: recordIDs)
+        let requeuedRecordIDs = pendingChanges.compactMap {
+            CloudKitPendingRecordZoneChangeFilter.recordID(for: $0)
+        }
+
+        #expect(requeuedRecordIDs == recordIDs)
+    }
+
     @Test func cloudKitErrorClassifierDetectsMissingZoneErrors() {
         let zoneNotFound = makeCloudKitError(.zoneNotFound)
         let userDeletedZone = makeCloudKitError(.userDeletedZone)
