@@ -185,6 +185,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
     private var acceptedAccountIdentifier: String?
     private var remoteCache = CloudKitRemoteNoteCache()
     private var pendingNotesByID: [String: StickyNote] = [:]
+    private var saveNoteIDsNeedingRemoteVerification: Set<String> = []
     private var sendBatchTracker = CloudKitSendBatchTracker()
     private var didResolveZoneExistence = false
     private var zoneExistsRemotely = false
@@ -280,6 +281,9 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
 
         let completeness: CloudRemoteSnapshotCompleteness =
             issueMessages.isEmpty ? .complete : .partial(Self.issueSummary(issueMessages))
+        if completeness == .complete {
+            reconcileAmbiguousSavesFoundRemotely(syncEngine: syncEngine)
+        }
         if issueMessages.isEmpty {
             StickyNotesLog.cloudKit.info(
                 """
@@ -327,6 +331,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                     .filter { $0.cloudUploadBlock != nil }
                     .map(\.id)
             )
+            saveNoteIDsNeedingRemoteVerification.subtract(saves.map(\.id))
 
             if !saves.isEmpty {
                 try await ensureZoneExistsForWrites(syncEngine: syncEngine)
@@ -353,9 +358,11 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                 )
             }
 
+            sendBatchTracker.beginSendAttempt()
             do {
                 try await syncEngine.sendChanges()
             } catch {
+                markUnresolvedSavesForRemoteVerificationIfNeeded(after: error)
                 let recovered = recoverRecordSaveFailures(from: error, syncEngine: syncEngine)
                 StickyNotesLog.cloudKit.error(
                     """
@@ -363,9 +370,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                     error: \(error.localizedDescription, privacy: .private)
                     """
                 )
-                if !recovered,
-                   !blockExpectedSavesIfNeeded(after: error, syncEngine: syncEngine)
-                {
+                if !recovered {
                     sendBatchTracker.markFailure(error.localizedDescription)
                 }
             }
@@ -380,6 +385,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                 syncEngine.state.add(
                     pendingRecordZoneChanges: freshRetryRecordIDs.map { .saveRecord($0) }
                 )
+                sendBatchTracker.beginSendAttempt()
                 StickyNotesLog.cloudKit.info(
                     "Retrying blocked CloudKit saves as fresh records count: \(freshRetryRecordIDs.count, privacy: .public)"
                 )
@@ -389,13 +395,12 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                         CKSyncEngine.SendChangesOptions(scope: .recordIDs(freshRetryRecordIDs))
                     )
                 } catch {
+                    markUnresolvedSavesForRemoteVerificationIfNeeded(after: error)
                     let recovered = recoverRecordSaveFailures(from: error, syncEngine: syncEngine)
                     StickyNotesLog.cloudKit.error(
                         "Fresh-record CloudKit retry failed: \(error.localizedDescription, privacy: .private)"
                     )
-                    if !recovered,
-                       !blockExpectedSavesIfNeeded(after: error, syncEngine: syncEngine)
-                    {
+                    if !recovered {
                         sendBatchTracker.markFailure(error.localizedDescription)
                     }
                 }
@@ -679,9 +684,49 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         for noteID in noteIDs {
             pendingNotesByID.removeValue(forKey: noteID)
         }
+        saveNoteIDsNeedingRemoteVerification.subtract(noteIDs)
 
         StickyNotesLog.cloudKit.info(
             "Discarded one-shot blocked CloudKit saves count: \(noteIDs.count, privacy: .public)"
+        )
+    }
+
+    private func markUnresolvedSavesForRemoteVerificationIfNeeded(after error: Error) {
+        guard CloudKitErrorClassifier.isServerResponseLost(error) else { return }
+        saveNoteIDsNeedingRemoteVerification.formUnion(sendBatchTracker.unresolvedSaveNoteIDs)
+    }
+
+    private func reconcileAmbiguousSavesFoundRemotely(syncEngine: CKSyncEngine) {
+        let remotelyPresentNoteIDs = saveNoteIDsNeedingRemoteVerification.filter {
+            remoteCache.note(withID: $0) != nil
+        }
+        guard !remotelyPresentNoteIDs.isEmpty else { return }
+
+        let matchingPayloadCount = remotelyPresentNoteIDs.filter { noteID in
+            guard let pendingNote = pendingNotesByID[noteID],
+                  let remoteNote = remoteCache.note(withID: noteID)
+            else {
+                return false
+            }
+            return pendingNote.content == remoteNote.content
+                && pendingNote.lastModified == remoteNote.lastModified
+        }.count
+
+        syncEngine.state.remove(
+            pendingRecordZoneChanges: remotelyPresentNoteIDs.map {
+                .saveRecord(recordID(for: $0))
+            }
+        )
+        for noteID in remotelyPresentNoteIDs {
+            pendingNotesByID.removeValue(forKey: noteID)
+        }
+        saveNoteIDsNeedingRemoteVerification.subtract(remotelyPresentNoteIDs)
+        StickyNotesLog.cloudKit.info(
+            """
+            Reconciled ambiguous CloudKit saves from remote snapshot count: \
+            \(remotelyPresentNoteIDs.count, privacy: .public) \
+            matchingPayloadCount: \(matchingPayloadCount, privacy: .public)
+            """
         )
     }
 
@@ -699,6 +744,9 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         }
 
         for rejectedFailure in classification.permanentlyRejectedSaveFailures {
+            guard sendBatchTracker.claimSaveFailure(noteID: rejectedFailure.noteID) else {
+                continue
+            }
             blockPendingSave(
                 noteID: rejectedFailure.noteID,
                 message: rejectedFailure.message,
@@ -707,6 +755,9 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         }
 
         for noteID in classification.unknownItemRetryNoteIDs {
+            guard sendBatchTracker.claimSaveFailure(noteID: noteID) else {
+                continue
+            }
             guard let pendingNote = pendingNotesByID[noteID] else { return false }
             let disposition = sendBatchTracker.handleUnknownItemSave(
                 pendingNote,
@@ -716,41 +767,38 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             case let .deferredRetry(retriableNote), let .retryImmediately(retriableNote):
                 pendingNotesByID[noteID] = retriableNote
             case .permanentlyRejected:
-                pendingNotesByID.removeValue(forKey: noteID)
+                blockPendingSave(
+                    noteID: noteID,
+                    message: error.localizedDescription,
+                    syncEngine: syncEngine
+                )
             case .ignored:
                 return false
             }
         }
+
+        for noteID in classification.serverResponseLostNoteIDs {
+            guard sendBatchTracker.claimSaveFailure(noteID: noteID) else {
+                continue
+            }
+            saveNoteIDsNeedingRemoteVerification.insert(noteID)
+        }
+
+        let stillUnhandledNoteIDs = Set(classification.unhandledSaveFailureNoteIDs).filter {
+            !sendBatchTracker.hasHandledSaveFailure(noteID: $0)
+        }
+        let hasUnhandledFailures = classification.hasUnattributedFailures
+            || !stillUnhandledNoteIDs.isEmpty
 
         StickyNotesLog.cloudKit.info(
             """
             Classified partial CloudKit save failures unknownItemCount: \
             \(classification.unknownItemRetryNoteIDs.count, privacy: .public) \
             rejectedCount: \(classification.permanentlyRejectedSaveFailures.count, privacy: .public) \
-            hasUnhandled: \(classification.hasUnhandledFailures, privacy: .public)
+            hasUnhandled: \(hasUnhandledFailures, privacy: .public)
             """
         )
-        return !classification.hasUnhandledFailures
-    }
-
-    private func blockExpectedSavesIfNeeded(
-        after error: Error,
-        syncEngine: CKSyncEngine
-    ) -> Bool {
-        let classification = CloudKitErrorClassifier.classifyRecordSaveFailure(error)
-        guard classification.kind == .permanentlyRejected else { return false }
-
-        let noteIDs = sendBatchTracker.expectedSaveNoteIDs
-        guard !noteIDs.isEmpty else { return false }
-
-        for noteID in noteIDs {
-            blockPendingSave(
-                noteID: noteID,
-                message: classification.message,
-                syncEngine: syncEngine
-            )
-        }
-        return true
+        return !hasUnhandledFailures
     }
 
     private func blockPendingSave(
@@ -762,6 +810,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             pendingRecordZoneChanges: [.saveRecord(recordID(for: noteID))]
         )
         pendingNotesByID.removeValue(forKey: noteID)
+        saveNoteIDsNeedingRemoteVerification.remove(noteID)
         sendBatchTracker.markPermanentlyRejectedSave(noteID: noteID, message: message)
     }
 
@@ -889,6 +938,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
 
             remoteCache.upsert(note)
             pendingNotesByID.removeValue(forKey: note.id)
+            saveNoteIDsNeedingRemoteVerification.remove(note.id)
             sendBatchTracker.markSaved(note)
             savedRecordCount += 1
         }
@@ -904,6 +954,9 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         for failedRecordSave in event.failedRecordSaves where failedRecordSave.record.recordID.zoneID == StickyNotesCloudKitConfig.zoneID {
             let recordID = failedRecordSave.record.recordID
             let noteID = recordID.recordName
+            guard sendBatchTracker.claimSaveFailure(noteID: noteID) else {
+                continue
+            }
             let classification = CloudKitErrorClassifier.classifyRecordSaveFailure(failedRecordSave.error)
 
             switch classification.kind {
@@ -915,6 +968,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             case .conflict:
                 syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 pendingNotesByID.removeValue(forKey: noteID)
+                saveNoteIDsNeedingRemoteVerification.remove(noteID)
 
                 if let serverRecord = classification.serverRecord,
                    let remoteNote = StickyNoteRecordMapper.note(from: serverRecord)
@@ -960,6 +1014,7 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                 // pending queue instead of letting it wedge the sync loop.
                 syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 pendingNotesByID.removeValue(forKey: noteID)
+                saveNoteIDsNeedingRemoteVerification.remove(noteID)
                 sendBatchTracker.markPermanentlyRejectedSave(
                     noteID: noteID,
                     message: classification.message
@@ -972,6 +1027,9 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                     """
                 )
             case .retryable:
+                if CloudKitErrorClassifier.isServerResponseLost(failedRecordSave.error) {
+                    saveNoteIDsNeedingRemoteVerification.insert(noteID)
+                }
                 sendBatchTracker.markFailure(classification.message)
                 failedSaveCount += 1
             }
@@ -1108,6 +1166,7 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
             case .signIn:
                 StickyNotesLog.cloudKit.info("CloudKit account sign-in event received")
                 remoteCache.removeAll()
+                saveNoteIDsNeedingRemoteVerification.removeAll()
                 stateSerializationData = nil
                 self.syncEngine = nil
                 didResolveZoneExistence = false
@@ -1118,6 +1177,7 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
                 StickyNotesLog.cloudKit.warning("CloudKit account sign-out or switch event received")
                 remoteCache.removeAll()
                 pendingNotesByID.removeAll()
+                saveNoteIDsNeedingRemoteVerification.removeAll()
                 stateSerializationData = nil
                 self.syncEngine = nil
                 didResolveZoneExistence = false
@@ -1128,6 +1188,7 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
                 StickyNotesLog.cloudKit.warning("Unknown CloudKit account-change event received")
                 remoteCache.removeAll()
                 pendingNotesByID.removeAll()
+                saveNoteIDsNeedingRemoteVerification.removeAll()
                 stateSerializationData = nil
                 self.syncEngine = nil
                 didResolveZoneExistence = false
@@ -1160,7 +1221,10 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
 
                 switch pendingChange {
                 case let .saveRecord(recordID):
-                    guard pendingNotesByID[recordID.recordName]?.cloudUploadBlock != nil else {
+                    guard let pendingNote = pendingNotesByID[recordID.recordName] else {
+                        return false
+                    }
+                    guard pendingNote.cloudUploadBlock != nil else {
                         return true
                     }
                     return sendBatchTracker.shouldIncludeBlockedSave(noteID: recordID.recordName)

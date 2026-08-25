@@ -54,7 +54,6 @@ enum StickyNotesMergeEngine {
             }
 
             if localNote.needsCloudUpload,
-               localNote.cloudUploadBlock != nil,
                remoteSnapshotCompleteness == .complete,
                matchesUploadedCloudPayload(localNote, remoteNote)
             {

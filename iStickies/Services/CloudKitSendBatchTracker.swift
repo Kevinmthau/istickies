@@ -18,6 +18,29 @@ struct CloudKitSendBatchTracker {
         activeContext?.expectedSaveNoteIDs ?? []
     }
 
+    var unresolvedSaveNoteIDs: Set<String> {
+        activeContext?.unresolvedSaveNoteIDs ?? []
+    }
+
+    mutating func beginSendAttempt() {
+        guard var activeContext else { return }
+        activeContext.handledSaveFailureNoteIDs.removeAll()
+        self.activeContext = activeContext
+    }
+
+    func hasHandledSaveFailure(noteID: String) -> Bool {
+        activeContext?.handledSaveFailureNoteIDs.contains(noteID) == true
+    }
+
+    mutating func claimSaveFailure(noteID: String) -> Bool {
+        guard var activeContext else { return true }
+        guard activeContext.expectedSaveNoteIDs.contains(noteID) else { return true }
+
+        let insertion = activeContext.handledSaveFailureNoteIDs.insert(noteID)
+        self.activeContext = activeContext
+        return insertion.inserted
+    }
+
     mutating func begin(
         expectedSaveNoteIDs: Set<String>,
         expectedDeleteNoteIDs: Set<String>,
@@ -189,6 +212,7 @@ private struct CloudKitSendBatchContext {
     var conflictsByNoteID: [String: StickyNote] = [:]
     var freshRetryCandidatesByID: [String: StickyNote] = [:]
     var freshRetryAttemptedNoteIDs: Set<String> = []
+    var handledSaveFailureNoteIDs: Set<String> = []
     var failureMessage: String?
     var unresolvedSaveNoteIDs: Set<String>
     var unresolvedDeleteNoteIDs: Set<String>

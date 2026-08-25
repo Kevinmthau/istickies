@@ -45,13 +45,25 @@ struct CloudKitPermanentlyRejectedSaveFailure: Equatable {
 struct CloudKitPartialRecordSaveFailureClassification: Equatable {
     var unknownItemRetryNoteIDs: [String]
     var permanentlyRejectedSaveFailures: [CloudKitPermanentlyRejectedSaveFailure]
-    var hasUnhandledFailures: Bool
+    var serverResponseLostNoteIDs: [String]
+    var unhandledSaveFailureNoteIDs: [String]
+    var hasUnattributedFailures: Bool
+
+    var hasUnhandledFailures: Bool {
+        hasUnattributedFailures
+            || !serverResponseLostNoteIDs.isEmpty
+            || !unhandledSaveFailureNoteIDs.isEmpty
+    }
 }
 
 enum CloudKitErrorClassifier {
     static func isMissingZone(_ error: Error) -> Bool {
         guard let ckError = cloudKitError(from: error) else { return false }
         return isMissingZone(ckError)
+    }
+
+    static func isServerResponseLost(_ error: Error) -> Bool {
+        cloudKitError(from: error)?.code == .serverResponseLost
     }
 
     static func classifyRecordSaveFailure(_ error: Error) -> CloudKitRecordSaveFailureClassification {
@@ -91,6 +103,7 @@ enum CloudKitErrorClassifier {
              .notAuthenticated,
              .operationCancelled,
              .batchRequestFailed,
+             .serverResponseLost,
              .zoneBusy,
              .accountTemporarilyUnavailable:
             return CloudKitRecordSaveFailureClassification(
@@ -156,14 +169,16 @@ enum CloudKitErrorClassifier {
 
         var unknownItemRetryNoteIDs: Set<String> = []
         var permanentlyRejectedSaveFailures: [CloudKitPermanentlyRejectedSaveFailure] = []
-        var hasUnhandledFailures = false
+        var serverResponseLostNoteIDs: Set<String> = []
+        var unhandledSaveFailureNoteIDs: Set<String> = []
+        var hasUnattributedFailures = false
 
         for (itemID, itemError) in partialErrors {
             guard let recordID = itemID as? CKRecord.ID,
                   recordID.zoneID == targetZoneID,
                   pendingSaveNoteIDs.contains(recordID.recordName)
             else {
-                hasUnhandledFailures = true
+                hasUnattributedFailures = true
                 continue
             }
 
@@ -178,8 +193,10 @@ enum CloudKitErrorClassifier {
                         message: classification.message
                     )
                 )
+            case .retryable where isServerResponseLost(itemError):
+                serverResponseLostNoteIDs.insert(recordID.recordName)
             case .missingZone, .conflict, .retryable:
-                hasUnhandledFailures = true
+                unhandledSaveFailureNoteIDs.insert(recordID.recordName)
             }
         }
 
@@ -188,7 +205,9 @@ enum CloudKitErrorClassifier {
             permanentlyRejectedSaveFailures: permanentlyRejectedSaveFailures.sorted {
                 $0.noteID < $1.noteID
             },
-            hasUnhandledFailures: hasUnhandledFailures
+            serverResponseLostNoteIDs: serverResponseLostNoteIDs.sorted(),
+            unhandledSaveFailureNoteIDs: unhandledSaveFailureNoteIDs.sorted(),
+            hasUnattributedFailures: hasUnattributedFailures
         )
     }
 

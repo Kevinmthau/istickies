@@ -87,6 +87,7 @@ final class StickyNotesStore: ObservableObject {
     private var hasStartedLoading = false
     private var hasLoaded = false
     private var isSynchronizing = false
+    private var pendingSyncRequest = false
     private var pendingBlockedUploadRetry = false
     private var scheduledSyncTask: StickyNotesDelayedTask?
     private var scheduledPersistenceTask: StickyNotesDelayedTask?
@@ -385,6 +386,7 @@ final class StickyNotesStore: ObservableObject {
             return
         }
         guard !isSynchronizing else {
+            pendingSyncRequest = true
             pendingBlockedUploadRetry = pendingBlockedUploadRetry || retryingBlockedUploads
             StickyNotesLog.sync.debug(
                 "Sync request coalesced because a sync is already running"
@@ -397,10 +399,11 @@ final class StickyNotesStore: ObservableObject {
 
         var shouldRetryBlockedUploads = retryingBlockedUploads || pendingBlockedUploadRetry
         repeat {
+            pendingSyncRequest = false
             pendingBlockedUploadRetry = false
             await performSyncPass(retryingBlockedUploads: shouldRetryBlockedUploads)
             shouldRetryBlockedUploads = pendingBlockedUploadRetry
-        } while shouldRetryBlockedUploads
+        } while pendingSyncRequest
     }
 
     private func performSyncPass(retryingBlockedUploads: Bool) async {
