@@ -264,7 +264,7 @@ struct NoteEditorView: View {
                     statusObservation: store.syncStatusObservation(),
                     retry: {
                         store.clearLastErrorMessage()
-                        Task { await store.syncNow() }
+                        Task { await store.syncNow(retryingBlockedUploads: true) }
                     },
                     dismiss: {
                         store.clearLastErrorMessage()

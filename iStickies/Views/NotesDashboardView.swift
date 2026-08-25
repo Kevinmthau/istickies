@@ -406,7 +406,7 @@ private struct StickyNotesSyncModifier: ViewModifier {
             .alert("Sync Issue", isPresented: syncErrorBinding) {
                 Button("Retry") {
                     store.clearLastErrorMessage()
-                    Task { await store.syncNow() }
+                    Task { await store.syncNow(retryingBlockedUploads: true) }
                 }
                 Button("Dismiss", role: .cancel) {
                     store.clearLastErrorMessage()
@@ -570,7 +570,7 @@ private struct MobileNotesSceneContent: View {
                                     }
                                 }
                                 .refreshable {
-                                    await store.syncNow()
+                                    await store.syncNow(retryingBlockedUploads: true)
                                 }
                                 .scrollDismissesKeyboard(.interactively)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

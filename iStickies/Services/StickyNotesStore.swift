@@ -377,7 +377,7 @@ final class StickyNotesStore: ObservableObject {
         await syncNow()
     }
 
-    func syncNow() async {
+    func syncNow(retryingBlockedUploads: Bool = false) async {
         guard hasLoaded else { return }
         guard !isSynchronizing else {
             StickyNotesLog.sync.debug("Sync request ignored because a sync is already running")
@@ -414,7 +414,10 @@ final class StickyNotesStore: ObservableObject {
                 mergeTransition.remoteSnapshotCompleteness
             )
 
-            let outgoingChanges = syncCoordinator.outgoingChanges(from: syncLocalState)
+            let outgoingChanges = syncCoordinator.outgoingChanges(
+                from: syncLocalState,
+                retryingBlockedUploads: retryingBlockedUploads
+            )
             let syncResult = await syncCoordinator.send(outgoingChanges)
             let applicationTransition = syncCoordinator.apply(
                 syncResult: syncResult,

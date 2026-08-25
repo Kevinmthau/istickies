@@ -992,13 +992,21 @@ struct iStickiesTests {
         #expect(deleteClassification.kind == .terminal)
     }
 
-    @Test func cloudKitErrorClassifierClassifiesSchemaRejectionsAsPermanent() {
-        let error = makeCloudKitError(.invalidArguments)
+    @Test func cloudKitErrorClassifierClassifiesPayloadStableRejectionsAsPermanent() {
+        let rejectionCodes: [CKError.Code] = [
+            .invalidArguments,
+            .serverRejectedRequest,
+            .constraintViolation,
+        ]
 
-        let saveClassification = CloudKitErrorClassifier.classifyRecordSaveFailure(error)
+        for code in rejectionCodes {
+            let classification = CloudKitErrorClassifier.classifyRecordSaveFailure(
+                makeCloudKitError(code)
+            )
 
-        #expect(saveClassification.kind == .permanentlyRejected)
-        #expect(saveClassification.serverRecord == nil)
+            #expect(classification.kind == .permanentlyRejected)
+            #expect(classification.serverRecord == nil)
+        }
     }
 
     @Test func cloudKitRecordWriteOmitsTitleOverrideFieldMissingFromProductionSchema() {
@@ -1060,18 +1068,23 @@ struct iStickiesTests {
             sentNotesByID: [sentNote.id: sentNote]
         )
         let rejectedNote = try #require(outcome.notes.first)
-        let outgoingChanges = StickyNotesSyncCoordinator(cloudService: MockCloudService())
-            .outgoingChanges(
-                from: StickyNotesSyncLocalState(notes: outcome.notes, pendingDeletionIDs: [])
-            )
+        let coordinator = StickyNotesSyncCoordinator(cloudService: MockCloudService())
+        let blockedState = StickyNotesSyncLocalState(notes: outcome.notes, pendingDeletionIDs: [])
+        let automaticChanges = coordinator.outgoingChanges(from: blockedState)
+        let explicitRetryChanges = coordinator.outgoingChanges(
+            from: blockedState,
+            retryingBlockedUploads: true
+        )
 
         #expect(rejectedNote.needsCloudUpload)
         #expect(rejectedNote.cloudUploadBlock == .permanentlyRejected)
         #expect(!rejectedNote.shouldAttemptCloudUpload)
         #expect(rejectedNote.content == "Local draft")
         #expect(rejectedNote.titleOverride == "Conflict Copy")
-        #expect(outgoingChanges.saves.isEmpty)
-        #expect(outgoingChanges.savesByID.isEmpty)
+        #expect(automaticChanges.saves.isEmpty)
+        #expect(automaticChanges.savesByID.isEmpty)
+        #expect(explicitRetryChanges.saves.map(\.id) == [sentNote.id])
+        #expect(explicitRetryChanges.savesByID[sentNote.id]?.content == sentNote.content)
     }
 
     @Test func permanentlyRejectedNewNoteSurvivesNextCompleteRemoteSnapshot() throws {
@@ -1224,6 +1237,40 @@ struct iStickiesTests {
         #expect(uploadedNote.needsCloudUpload == false)
         #expect(uploadedNote.cloudUploadBlock == nil)
         #expect(await acceptingService.snapshot().contains { $0.id == noteID })
+    }
+
+    @Test func explicitRetryResubmitsPersistedRejectedUploadWithoutContentChange() async throws {
+        let fileURL = temporaryStoreURL()
+        let fileStore = StickyNotesFileStore(fileURL: fileURL)
+        let blockedNote = StickyNote(
+            id: "blocked-note",
+            content: "Unchanged local content",
+            needsCloudUpload: true,
+            cloudUploadBlock: .permanentlyRejected
+        )
+        try await fileStore.save(StickyNotesSnapshot(notes: [blockedNote]))
+
+        let acceptingService = MockCloudService()
+        let store = StickyNotesStore(
+            fileStore: fileStore,
+            cloudService: acceptingService,
+            delayedTaskScheduler: TestDelayedTaskScheduler(),
+            autoLoad: false
+        )
+
+        await store.load()
+        await store.syncNow()
+
+        #expect(await acceptingService.snapshot().isEmpty)
+        #expect(store.note(withID: blockedNote.id)?.cloudUploadBlock == .permanentlyRejected)
+
+        await store.syncNow(retryingBlockedUploads: true)
+
+        let uploadedNote = try #require(store.note(withID: blockedNote.id))
+        #expect(uploadedNote.content == blockedNote.content)
+        #expect(uploadedNote.needsCloudUpload == false)
+        #expect(uploadedNote.cloudUploadBlock == nil)
+        #expect(await acceptingService.snapshot().contains { $0.id == blockedNote.id })
     }
 
     @Test func mergeKeepsLocalTitleOverrideWhenRemoteNoteWins() throws {
