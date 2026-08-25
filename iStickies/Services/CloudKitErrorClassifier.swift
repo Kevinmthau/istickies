@@ -9,7 +9,9 @@ enum CloudKitRecordSaveFailureKind: Equatable {
     /// deployed schema or a violated record constraint). Resending the same payload cannot
     /// succeed, so it must be dropped from the automatic queue instead of retried forever.
     case permanentlyRejected
-    case terminal
+    /// CKSyncEngine or a later external sync trigger can retry this failure without changing the
+    /// record payload or app/account configuration.
+    case retryable
 }
 
 struct CloudKitRecordSaveFailureClassification {
@@ -35,6 +37,17 @@ enum CloudKitRetriableSavePartialFailureClassification: Equatable {
     case unhandled
 }
 
+struct CloudKitPermanentlyRejectedSaveFailure: Equatable {
+    var noteID: String
+    var message: String
+}
+
+struct CloudKitPartialRecordSaveFailureClassification: Equatable {
+    var unknownItemRetryNoteIDs: [String]
+    var permanentlyRejectedSaveFailures: [CloudKitPermanentlyRejectedSaveFailure]
+    var hasUnhandledFailures: Bool
+}
+
 enum CloudKitErrorClassifier {
     static func isMissingZone(_ error: Error) -> Bool {
         guard let ckError = cloudKitError(from: error) else { return false }
@@ -45,7 +58,7 @@ enum CloudKitErrorClassifier {
         let message = error.localizedDescription
         guard let ckError = cloudKitError(from: error) else {
             return CloudKitRecordSaveFailureClassification(
-                kind: .terminal,
+                kind: .retryable,
                 serverRecord: nil,
                 message: message
             )
@@ -70,15 +83,24 @@ enum CloudKitErrorClassifier {
                 serverRecord: nil,
                 message: message
             )
-        case .invalidArguments, .serverRejectedRequest, .constraintViolation:
+        case .partialFailure,
+             .networkUnavailable,
+             .networkFailure,
+             .serviceUnavailable,
+             .requestRateLimited,
+             .notAuthenticated,
+             .operationCancelled,
+             .batchRequestFailed,
+             .zoneBusy,
+             .accountTemporarilyUnavailable:
             return CloudKitRecordSaveFailureClassification(
-                kind: .permanentlyRejected,
+                kind: .retryable,
                 serverRecord: nil,
                 message: message
             )
         default:
             return CloudKitRecordSaveFailureClassification(
-                kind: .terminal,
+                kind: .permanentlyRejected,
                 serverRecord: nil,
                 message: message
             )
@@ -106,34 +128,68 @@ enum CloudKitErrorClassifier {
         targetZoneID: CKRecordZone.ID,
         pendingSaveNoteIDs: Set<String>
     ) -> CloudKitRetriableSavePartialFailureClassification {
-        guard let partialErrors = partialItemErrors(from: error), !partialErrors.isEmpty else {
+        guard let classification = classifyPartialRecordSaveFailures(
+            error,
+            targetZoneID: targetZoneID,
+            pendingSaveNoteIDs: pendingSaveNoteIDs
+        ), !classification.unknownItemRetryNoteIDs.isEmpty
+        else {
             return .unhandled
         }
 
-        var retriableNoteIDs: Set<String> = []
-        var encounteredUnhandledError = false
+        return classification.hasUnhandledFailures
+            || !classification.permanentlyRejectedSaveFailures.isEmpty
+            ? .partiallyRecoverableUnknownItemSaves(
+                noteIDs: classification.unknownItemRetryNoteIDs
+            )
+            : .recoverableUnknownItemSaves(noteIDs: classification.unknownItemRetryNoteIDs)
+    }
+
+    static func classifyPartialRecordSaveFailures(
+        _ error: Error,
+        targetZoneID: CKRecordZone.ID,
+        pendingSaveNoteIDs: Set<String>
+    ) -> CloudKitPartialRecordSaveFailureClassification? {
+        guard let partialErrors = partialItemErrors(from: error), !partialErrors.isEmpty else {
+            return nil
+        }
+
+        var unknownItemRetryNoteIDs: Set<String> = []
+        var permanentlyRejectedSaveFailures: [CloudKitPermanentlyRejectedSaveFailure] = []
+        var hasUnhandledFailures = false
 
         for (itemID, itemError) in partialErrors {
             guard let recordID = itemID as? CKRecord.ID,
                   recordID.zoneID == targetZoneID,
-                  pendingSaveNoteIDs.contains(recordID.recordName),
-                  cloudKitError(from: itemError)?.code == .unknownItem
+                  pendingSaveNoteIDs.contains(recordID.recordName)
             else {
-                encounteredUnhandledError = true
+                hasUnhandledFailures = true
                 continue
             }
 
-            retriableNoteIDs.insert(recordID.recordName)
+            let classification = classifyRecordSaveFailure(itemError)
+            switch classification.kind {
+            case .unknownItemRetry:
+                unknownItemRetryNoteIDs.insert(recordID.recordName)
+            case .permanentlyRejected:
+                permanentlyRejectedSaveFailures.append(
+                    CloudKitPermanentlyRejectedSaveFailure(
+                        noteID: recordID.recordName,
+                        message: classification.message
+                    )
+                )
+            case .missingZone, .conflict, .retryable:
+                hasUnhandledFailures = true
+            }
         }
 
-        guard !retriableNoteIDs.isEmpty else {
-            return .unhandled
-        }
-
-        let noteIDs = retriableNoteIDs.sorted()
-        return encounteredUnhandledError
-            ? .partiallyRecoverableUnknownItemSaves(noteIDs: noteIDs)
-            : .recoverableUnknownItemSaves(noteIDs: noteIDs)
+        return CloudKitPartialRecordSaveFailureClassification(
+            unknownItemRetryNoteIDs: unknownItemRetryNoteIDs.sorted(),
+            permanentlyRejectedSaveFailures: permanentlyRejectedSaveFailures.sorted {
+                $0.noteID < $1.noteID
+            },
+            hasUnhandledFailures: hasUnhandledFailures
+        )
     }
 
     private static func isMissingZone(_ error: CKError) -> Bool {

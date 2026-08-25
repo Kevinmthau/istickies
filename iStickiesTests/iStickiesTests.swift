@@ -213,6 +213,46 @@ struct iStickiesTests {
         })
     }
 
+    @Test func explicitBlockedUploadRetryQueuedDuringActiveSyncRunsNext() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let blockedNote = StickyNote(
+            id: "blocked-note",
+            content: "Retry me",
+            needsCloudUpload: true,
+            cloudUploadBlock: .permanentlyRejected
+        )
+        try await fileStore.save(StickyNotesSnapshot(notes: [blockedNote]))
+
+        let cloudService = MockCloudService(fetchDelay: .milliseconds(100))
+        let store = StickyNotesStore(
+            fileStore: fileStore,
+            cloudService: cloudService,
+            delayedTaskScheduler: TestDelayedTaskScheduler(),
+            autoLoad: false
+        )
+        await store.load()
+
+        let activeSync = Task { await store.syncNow() }
+        var didEnterFirstFetch = false
+        for _ in 0..<1_000 {
+            if await cloudService.fetchCount() == 1 {
+                didEnterFirstFetch = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(didEnterFirstFetch)
+
+        await store.syncNow(retryingBlockedUploads: true)
+        await activeSync.value
+
+        let uploadedNote = try #require(store.note(withID: blockedNote.id))
+        #expect(await cloudService.fetchCount() == 2)
+        #expect(uploadedNote.needsCloudUpload == false)
+        #expect(uploadedNote.cloudUploadBlock == nil)
+        #expect(await cloudService.snapshot().contains { $0.id == blockedNote.id })
+    }
+
     @Test func unavailableCloudSnapshotDoesNotDeleteCleanLocalNotes() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let previousSyncDate = Date(timeIntervalSince1970: 30)
@@ -961,6 +1001,33 @@ struct iStickiesTests {
         #expect(classification == .partiallyRecoverableUnknownItemSaves(noteIDs: [retryRecordID.recordName]))
     }
 
+    @Test func cloudKitErrorClassifierSeparatesRecoverableAndRejectedPartialSaveFailures() throws {
+        let zoneID = CKRecordZone.ID(zoneName: "StickyNotes")
+        let retryRecordID = CKRecord.ID(recordName: "retry-note", zoneID: zoneID)
+        let rejectedRecordID = CKRecord.ID(recordName: "rejected-note", zoneID: zoneID)
+        let partialFailure = makeCloudKitError(
+            .partialFailure,
+            userInfo: [
+                CKPartialErrorsByItemIDKey: [
+                    AnyHashable(retryRecordID): makeCloudKitError(.unknownItem),
+                    AnyHashable(rejectedRecordID): makeCloudKitError(.permissionFailure),
+                ] as [AnyHashable: Error]
+            ]
+        )
+
+        let classification = try #require(
+            CloudKitErrorClassifier.classifyPartialRecordSaveFailures(
+                partialFailure,
+                targetZoneID: zoneID,
+                pendingSaveNoteIDs: [retryRecordID.recordName, rejectedRecordID.recordName]
+            )
+        )
+
+        #expect(classification.unknownItemRetryNoteIDs == [retryRecordID.recordName])
+        #expect(classification.permanentlyRejectedSaveFailures.map(\.noteID) == [rejectedRecordID.recordName])
+        #expect(classification.hasUnhandledFailures == false)
+    }
+
     @Test func cloudKitErrorClassifierLeavesUnhandledPartialSaveFailuresTerminal() {
         let zoneID = CKRecordZone.ID(zoneName: "StickyNotes")
         let failedRecordID = CKRecord.ID(recordName: "failed-note", zoneID: zoneID)
@@ -981,22 +1048,35 @@ struct iStickiesTests {
         #expect(classification == .unhandled)
     }
 
-    @Test func cloudKitErrorClassifierClassifiesTerminalFailures() {
+    @Test func cloudKitErrorClassifierBlocksNonrecoverableSaveFailures() {
         let error = makeCloudKitError(.permissionFailure)
 
         let saveClassification = CloudKitErrorClassifier.classifyRecordSaveFailure(error)
         let deleteClassification = CloudKitErrorClassifier.classifyRecordDeleteFailure(error)
 
-        #expect(saveClassification.kind == .terminal)
+        #expect(saveClassification.kind == .permanentlyRejected)
         #expect(saveClassification.serverRecord == nil)
         #expect(deleteClassification.kind == .terminal)
     }
 
-    @Test func cloudKitErrorClassifierClassifiesPayloadStableRejectionsAsPermanent() {
+    @Test func cloudKitErrorClassifierClassifiesNonrecoverableSavesAsPermanent() {
         let rejectionCodes: [CKError.Code] = [
+            .internalError,
+            .badContainer,
+            .missingEntitlement,
+            .permissionFailure,
             .invalidArguments,
             .serverRejectedRequest,
+            .assetFileNotFound,
+            .assetFileModified,
+            .incompatibleVersion,
             .constraintViolation,
+            .badDatabase,
+            .quotaExceeded,
+            .limitExceeded,
+            .referenceViolation,
+            .managedAccountRestricted,
+            .assetNotAvailable,
         ]
 
         for code in rejectionCodes {
@@ -1007,6 +1087,36 @@ struct iStickiesTests {
             #expect(classification.kind == .permanentlyRejected)
             #expect(classification.serverRecord == nil)
         }
+    }
+
+    @Test func cloudKitErrorClassifierKeepsKnownTransientSavesRetryable() {
+        let retryableCodes: [CKError.Code] = [
+            .partialFailure,
+            .networkUnavailable,
+            .networkFailure,
+            .serviceUnavailable,
+            .requestRateLimited,
+            .notAuthenticated,
+            .operationCancelled,
+            .batchRequestFailed,
+            .zoneBusy,
+            .accountTemporarilyUnavailable,
+        ]
+
+        for code in retryableCodes {
+            let classification = CloudKitErrorClassifier.classifyRecordSaveFailure(
+                makeCloudKitError(code)
+            )
+
+            #expect(classification.kind == .retryable)
+            #expect(classification.serverRecord == nil)
+        }
+
+        let localCancellation = CloudKitErrorClassifier.classifyRecordSaveFailure(
+            CancellationError()
+        )
+        #expect(localCancellation.kind == .retryable)
+        #expect(localCancellation.serverRecord == nil)
     }
 
     @Test func cloudKitRecordWriteOmitsTitleOverrideFieldMissingFromProductionSchema() {
@@ -1149,6 +1259,89 @@ struct iStickiesTests {
         #expect(nextMerge.notes.count == 1)
         #expect(preservedNote.content == "Unsynced local edit")
         #expect(preservedNote.cloudUploadBlock == .permanentlyRejected)
+    }
+
+    @Test func completeMatchingRemoteSnapshotAcknowledgesBlockedUpload() throws {
+        let uploadedAt = Date(timeIntervalSince1970: 30)
+        let localFrame = StickyNoteFrame(x: 20, y: 40, width: 280, height: 300)
+        let blockedNote = StickyNote(
+            id: "blocked-upload",
+            content: "Already reached CloudKit",
+            titleOverride: "Local title",
+            createdAt: Date(timeIntervalSince1970: 10),
+            lastModified: uploadedAt,
+            isOpen: false,
+            preferredFrame: localFrame,
+            needsCloudUpload: true,
+            cloudUploadBlock: .permanentlyRejected,
+            cloudKitSystemFieldsData: Data([1]),
+            cloudRevision: "old-revision"
+        )
+        let remoteNote = StickyNote(
+            id: blockedNote.id,
+            content: blockedNote.content,
+            createdAt: Date(timeIntervalSince1970: 20),
+            lastModified: uploadedAt,
+            needsCloudUpload: false,
+            cloudKitSystemFieldsData: Data([2]),
+            cloudRevision: "accepted-revision"
+        )
+
+        let outcome = StickyNotesMergeEngine.merge(
+            localNotes: [blockedNote],
+            remoteNotes: [remoteNote],
+            pendingDeletionIDs: [],
+            remoteSnapshotCompleteness: .complete
+        )
+        let acknowledgedNote = try #require(outcome.notes.first)
+
+        #expect(outcome.notes.count == 1)
+        #expect(acknowledgedNote.content == blockedNote.content)
+        #expect(acknowledgedNote.titleOverride == blockedNote.titleOverride)
+        #expect(acknowledgedNote.createdAt == blockedNote.createdAt)
+        #expect(acknowledgedNote.isOpen == blockedNote.isOpen)
+        #expect(acknowledgedNote.preferredFrame == localFrame)
+        #expect(acknowledgedNote.needsCloudUpload == false)
+        #expect(acknowledgedNote.cloudUploadBlock == nil)
+        #expect(acknowledgedNote.cloudKitSystemFieldsData == Data([2]))
+        #expect(acknowledgedNote.cloudRevision == "accepted-revision")
+    }
+
+    @Test func incompleteMatchingRemoteSnapshotDoesNotAcknowledgeBlockedUpload() throws {
+        let uploadedAt = Date(timeIntervalSince1970: 30)
+        let blockedNote = StickyNote(
+            id: "blocked-upload",
+            content: "Possibly uploaded",
+            lastModified: uploadedAt,
+            needsCloudUpload: true,
+            cloudUploadBlock: .permanentlyRejected,
+            cloudRevision: "old-revision"
+        )
+        let remoteNote = StickyNote(
+            id: blockedNote.id,
+            content: blockedNote.content,
+            lastModified: uploadedAt,
+            needsCloudUpload: false,
+            cloudRevision: "remote-revision"
+        )
+        let incompleteSnapshots: [CloudRemoteSnapshotCompleteness] = [
+            .partial("Partial fetch"),
+            .unavailable("CloudKit unavailable"),
+            .remoteReset("Zone reset"),
+        ]
+
+        for completeness in incompleteSnapshots {
+            let outcome = StickyNotesMergeEngine.merge(
+                localNotes: [blockedNote],
+                remoteNotes: [remoteNote],
+                pendingDeletionIDs: [],
+                remoteSnapshotCompleteness: completeness
+            )
+            let preservedNote = try #require(outcome.notes.first)
+
+            #expect(outcome.notes.count == 1)
+            #expect(preservedNote == blockedNote)
+        }
     }
 
     @Test func syncApplyKeepsPermanentlyRejectedNotesDirtyAfterNewerLocalEdits() throws {
@@ -1363,24 +1556,120 @@ struct iStickiesTests {
         #expect(result.failureMessage == nil)
     }
 
-    @Test func cloudKitSendBatchTrackerTreatsRetriableSavesAsResolvedForThisBatch() throws {
+    @Test func cloudKitSendBatchTrackerDefersOrdinaryUnknownItemRetry() throws {
         var tracker = CloudKitSendBatchTracker()
         let pendingNote = StickyNote(
             id: "pending-note",
             content: "Needs retry",
             needsCloudUpload: true,
-            cloudKitSystemFieldsData: nil
+            cloudKitSystemFieldsData: Data([1]),
+            cloudRevision: "stale-revision"
         )
 
         tracker.begin(expectedSaveNoteIDs: [pendingNote.id], expectedDeleteNoteIDs: [])
-        tracker.markPendingSaveForRetry(pendingNote)
+        let disposition = tracker.handleUnknownItemSave(pendingNote, message: "Unknown item")
 
         let result = tracker.finalize()
         let retryNote = try #require(result.pendingNotesRequiringRetry.first)
 
+        #expect(disposition == .deferredRetry(pendingNote.resettingCloudKitSystemFields()))
         #expect(result.pendingNotesRequiringRetry.count == 1)
         #expect(retryNote.id == pendingNote.id)
         #expect(retryNote.needsCloudUpload)
+        #expect(retryNote.cloudKitSystemFieldsData == nil)
+        #expect(retryNote.cloudRevision == nil)
+        #expect(result.failureMessage == nil)
+    }
+
+    @Test func cloudKitSendBatchTrackerRejectsRepeatedUnknownItemForFreshRecord() {
+        var tracker = CloudKitSendBatchTracker()
+        let freshNote = StickyNote(
+            id: "fresh-note",
+            content: "No stale metadata",
+            needsCloudUpload: true
+        )
+        tracker.begin(expectedSaveNoteIDs: [freshNote.id], expectedDeleteNoteIDs: [])
+
+        let disposition = tracker.handleUnknownItemSave(
+            freshNote,
+            message: "Fresh record was still unknown"
+        )
+        let result = tracker.finalize()
+
+        #expect(disposition == .permanentlyRejected)
+        #expect(result.permanentlyRejectedSaveNoteIDs == [freshNote.id])
+        #expect(result.pendingNotesRequiringRetry.isEmpty)
+        #expect(result.failureMessage == "Fresh record was still unknown")
+    }
+
+    @Test func cloudKitSendBatchTrackerBoundsForcedUnknownItemRetry() throws {
+        var tracker = CloudKitSendBatchTracker()
+        let blockedNote = StickyNote(
+            id: "blocked-note",
+            content: "Retry once",
+            needsCloudUpload: true,
+            cloudUploadBlock: .permanentlyRejected,
+            cloudKitSystemFieldsData: Data([1]),
+            cloudRevision: "stale-revision"
+        )
+        tracker.begin(
+            expectedSaveNoteIDs: [blockedNote.id],
+            expectedDeleteNoteIDs: [],
+            forcedBlockedSaveNoteIDs: [blockedNote.id]
+        )
+
+        let firstDisposition = tracker.handleUnknownItemSave(
+            blockedNote,
+            message: "Unknown item"
+        )
+        let freshRetry = try #require(tracker.takeFreshRetryCandidates().first)
+
+        #expect(firstDisposition == .retryImmediately(blockedNote.resettingCloudKitSystemFields()))
+        #expect(freshRetry.cloudKitSystemFieldsData == nil)
+        #expect(freshRetry.cloudRevision == nil)
+        #expect(tracker.takeFreshRetryCandidates().isEmpty)
+        #expect(tracker.shouldIncludeBlockedSave(noteID: blockedNote.id))
+        #expect(!tracker.shouldIncludeBlockedSave(noteID: "unrelated-note"))
+
+        let secondDisposition = tracker.handleUnknownItemSave(
+            freshRetry,
+            message: "Still unknown"
+        )
+        let result = tracker.finalize()
+
+        #expect(secondDisposition == .permanentlyRejected)
+        #expect(result.permanentlyRejectedSaveNoteIDs == [blockedNote.id])
+        #expect(result.pendingNotesRequiringRetry.isEmpty)
+        #expect(result.failureMessage == "Still unknown")
+    }
+
+    @Test func cloudKitSendBatchTrackerAcceptsForcedFreshRecordRetry() throws {
+        var tracker = CloudKitSendBatchTracker()
+        let blockedNote = StickyNote(
+            id: "blocked-note",
+            content: "Retry once",
+            needsCloudUpload: true,
+            cloudUploadBlock: .permanentlyRejected,
+            cloudKitSystemFieldsData: Data([1]),
+            cloudRevision: "stale-revision"
+        )
+        tracker.begin(
+            expectedSaveNoteIDs: [blockedNote.id],
+            expectedDeleteNoteIDs: [],
+            forcedBlockedSaveNoteIDs: [blockedNote.id]
+        )
+        _ = tracker.handleUnknownItemSave(blockedNote, message: "Unknown item")
+        let freshRetry = try #require(tracker.takeFreshRetryCandidates().first)
+
+        tracker.markSaved(freshRetry)
+        let result = tracker.finalize()
+        let savedNote = try #require(result.savedNotes.first)
+
+        #expect(result.savedNotes.count == 1)
+        #expect(savedNote.id == blockedNote.id)
+        #expect(savedNote.needsCloudUpload == false)
+        #expect(savedNote.cloudUploadBlock == nil)
+        #expect(result.permanentlyRejectedSaveNoteIDs.isEmpty)
         #expect(result.failureMessage == nil)
     }
 

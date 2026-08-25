@@ -186,10 +186,6 @@ struct StickyNotesSyncCoordinator: Sendable {
         hasPendingCloudChanges ? 1.0 : nil
     }
 
-    func retrySyncDelay(hasPendingCloudChanges: Bool) -> TimeInterval? {
-        hasPendingCloudChanges ? 5.0 : nil
-    }
-
     private func trustedCloudPersistedState(
         _ persistedState: StickyNotesCloudPersistedState,
         after remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness

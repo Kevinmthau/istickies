@@ -53,6 +53,17 @@ enum StickyNotesMergeEngine {
                 continue
             }
 
+            if localNote.needsCloudUpload,
+               localNote.cloudUploadBlock != nil,
+               remoteSnapshotCompleteness == .complete,
+               matchesUploadedCloudPayload(localNote, remoteNote)
+            {
+                mergedNotes.append(
+                    remoteReplacement(from: remoteNote, preservingWindowStateFrom: localNote)
+                )
+                continue
+            }
+
             if localNote.needsCloudUpload {
                 mergedNotes.append(localNote)
             } else if remoteNote.lastModified >= localNote.lastModified || remoteNote.content != localNote.content {
@@ -208,6 +219,14 @@ enum StickyNotesMergeEngine {
         // `titleOverride` is never synced, so remote notes always decode it as nil. Comparing it
         // here would report a conflict on every sync for locally retitled notes.
         localNote.content != remoteNote.content
+    }
+
+    private static func matchesUploadedCloudPayload(
+        _ localNote: StickyNote,
+        _ remoteNote: StickyNote
+    ) -> Bool {
+        localNote.content == remoteNote.content
+            && localNote.lastModified == remoteNote.lastModified
     }
 
     private static func refreshedLocalNote(

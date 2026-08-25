@@ -87,6 +87,7 @@ final class StickyNotesStore: ObservableObject {
     private var hasStartedLoading = false
     private var hasLoaded = false
     private var isSynchronizing = false
+    private var pendingBlockedUploadRetry = false
     private var scheduledSyncTask: StickyNotesDelayedTask?
     private var scheduledPersistenceTask: StickyNotesDelayedTask?
     private var persistenceTask: Task<Void, Never>?
@@ -379,19 +380,31 @@ final class StickyNotesStore: ObservableObject {
 
     func syncNow(retryingBlockedUploads: Bool = false) async {
         guard hasLoaded else { return }
-        guard !isSynchronizing else {
-            StickyNotesLog.sync.debug("Sync request ignored because a sync is already running")
-            return
-        }
         guard !hasLocalLoadFailure else {
             StickyNotesLog.sync.warning("Sync blocked after unrecoverable local snapshot load failure")
             return
         }
+        guard !isSynchronizing else {
+            pendingBlockedUploadRetry = pendingBlockedUploadRetry || retryingBlockedUploads
+            StickyNotesLog.sync.debug(
+                "Sync request coalesced because a sync is already running"
+            )
+            return
+        }
 
         isSynchronizing = true
-        syncState = .syncing
         defer { isSynchronizing = false }
 
+        var shouldRetryBlockedUploads = retryingBlockedUploads || pendingBlockedUploadRetry
+        repeat {
+            pendingBlockedUploadRetry = false
+            await performSyncPass(retryingBlockedUploads: shouldRetryBlockedUploads)
+            shouldRetryBlockedUploads = pendingBlockedUploadRetry
+        } while shouldRetryBlockedUploads
+    }
+
+    private func performSyncPass(retryingBlockedUploads: Bool) async {
+        syncState = .syncing
         var remoteSnapshotCompleteness: CloudRemoteSnapshotCompleteness?
         StickyNotesLog.sync.info(
             """
@@ -466,13 +479,6 @@ final class StickyNotesStore: ObservableObject {
                 error: \(error.localizedDescription, privacy: .private)
                 """
             )
-
-            if let delay = syncCoordinator.retrySyncDelay(
-                hasPendingCloudChanges: hasPendingCloudChanges
-            ) {
-                StickyNotesLog.sync.info("Scheduling sync retry delaySeconds: \(delay, privacy: .public)")
-                scheduleCloudSync(after: delay)
-            }
         }
     }
 
