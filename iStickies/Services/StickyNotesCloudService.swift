@@ -733,6 +733,8 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         let noteIDsRequiringVerification = CloudSaveVerificationPolicy
             .noteIDsRequiringVerification(
                 attemptedNoteIDs: attemptedNoteIDs,
+                materializedNoteIDs: sendBatchTracker
+                    .saveNoteIDsAwaitingResponseInCurrentAttempt,
                 unresolvedNoteIDs: sendBatchTracker.unresolvedSaveNoteIDs
             )
         for noteID in noteIDsRequiringVerification {
@@ -1154,6 +1156,16 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
         _ event: CKSyncEngine.Event.SentRecordZoneChanges,
         syncEngine: CKSyncEngine
     ) {
+        let failedRecordSaves = event.failedRecordSaves.filter {
+            $0.record.recordID.zoneID == StickyNotesCloudKitConfig.zoneID
+        }
+        let respondedSaveNoteIDs = Set(
+            event.savedRecords.lazy
+                .filter { $0.recordID.zoneID == StickyNotesCloudKitConfig.zoneID }
+                .map { $0.recordID.recordName }
+        ).union(failedRecordSaves.map { $0.record.recordID.recordName })
+        sendBatchTracker.markSaveResponsesReceived(noteIDs: respondedSaveNoteIDs)
+
         var savedRecordCount = 0
         var deletedRecordCount = 0
         var conflictCount = 0
@@ -1184,9 +1196,6 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
             deletedRecordCount += 1
         }
 
-        let failedRecordSaves = event.failedRecordSaves.filter {
-            $0.record.recordID.zoneID == StickyNotesCloudKitConfig.zoneID
-        }
         if !failedRecordSaves.isEmpty {
             let classification = CloudKitErrorClassifier.classifyRecordSaveFailures(
                 failedRecordSaves.map { ($0.record.recordID, $0.error) },
@@ -1428,13 +1437,23 @@ extension CloudKitStickyNotesCloudService: CKSyncEngineDelegate {
             )
         }
 
-        return await CKSyncEngine.RecordZoneChangeBatch(
+        guard let batch = await CKSyncEngine.RecordZoneChangeBatch(
             pendingChanges: pendingChanges.changes,
             recordProvider: { [weak self] recordID in
                 guard let self else { return nil }
                 return await self.recordProvider(for: recordID)
             }
+        ) else {
+            return nil
+        }
+
+        let materializedSaveNoteIDs = Set(
+            batch.recordsToSave.lazy
+                .filter { $0.recordID.zoneID == StickyNotesCloudKitConfig.zoneID }
+                .map { $0.recordID.recordName }
         )
+        sendBatchTracker.markMaterializedSaveNoteIDs(materializedSaveNoteIDs)
+        return batch
     }
 
     func nextFetchChangesOptions(
@@ -1598,9 +1617,12 @@ enum CloudSaveVerificationPolicy {
 
     static func noteIDsRequiringVerification(
         attemptedNoteIDs: Set<String>,
+        materializedNoteIDs: Set<String>,
         unresolvedNoteIDs: Set<String>
     ) -> Set<String> {
-        attemptedNoteIDs.intersection(unresolvedNoteIDs)
+        attemptedNoteIDs
+            .intersection(materializedNoteIDs)
+            .intersection(unresolvedNoteIDs)
     }
 }
 

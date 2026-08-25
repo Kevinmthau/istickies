@@ -26,6 +26,10 @@ struct CloudKitSendBatchTracker {
         activeContext?.limitExceededSaveFailuresInCurrentAttempt ?? [:]
     }
 
+    var saveNoteIDsAwaitingResponseInCurrentAttempt: Set<String> {
+        activeContext?.saveNoteIDsAwaitingResponseInCurrentAttempt ?? []
+    }
+
     var hasResolvedSaveFailureRootInCurrentAttempt: Bool {
         activeContext?.resolvedSaveFailureRootNoteIDsInCurrentAttempt.isEmpty == false
     }
@@ -45,6 +49,24 @@ struct CloudKitSendBatchTracker {
         activeContext.handledSaveFailureNoteIDs.removeAll()
         activeContext.limitExceededSaveFailuresInCurrentAttempt.removeAll()
         activeContext.resolvedSaveFailureRootNoteIDsInCurrentAttempt.removeAll()
+        activeContext.saveNoteIDsAwaitingResponseInCurrentAttempt.removeAll()
+        self.activeContext = activeContext
+    }
+
+    mutating func markMaterializedSaveNoteIDs(_ noteIDs: Set<String>) {
+        guard var activeContext else { return }
+        let materializedNoteIDs = noteIDs
+            .intersection(activeContext.activeAttemptSaveNoteIDs)
+            .intersection(activeContext.unresolvedSaveNoteIDs)
+        activeContext.saveNoteIDsAwaitingResponseInCurrentAttempt.formUnion(
+            materializedNoteIDs
+        )
+        self.activeContext = activeContext
+    }
+
+    mutating func markSaveResponsesReceived(noteIDs: Set<String>) {
+        guard var activeContext else { return }
+        activeContext.saveNoteIDsAwaitingResponseInCurrentAttempt.subtract(noteIDs)
         self.activeContext = activeContext
     }
 
@@ -213,6 +235,7 @@ struct CloudKitSendBatchTracker {
         activeContext.freshRetryAttemptedNoteIDs.remove(note.id)
         activeContext.batchRetryCandidateNoteIDs.remove(note.id)
         activeContext.provisionalBatchFailureMessagesByNoteID.removeValue(forKey: note.id)
+        activeContext.saveNoteIDsAwaitingResponseInCurrentAttempt.remove(note.id)
         self.activeContext = activeContext
     }
 
@@ -366,6 +389,7 @@ private struct CloudKitSendBatchContext {
     var handledSaveFailureNoteIDs: Set<String> = []
     var limitExceededSaveFailuresInCurrentAttempt: [String: String] = [:]
     var resolvedSaveFailureRootNoteIDsInCurrentAttempt: Set<String> = []
+    var saveNoteIDsAwaitingResponseInCurrentAttempt: Set<String> = []
     var batchRetryCandidateNoteIDs: Set<String> = []
     var batchRetryAttemptedNoteIDs: Set<String> = []
     var acceptsBatchRetryCandidates = true

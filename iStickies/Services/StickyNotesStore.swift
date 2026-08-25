@@ -360,12 +360,6 @@ final class StickyNotesStore: ObservableObject {
             )
             return
         }
-        guard !isSynchronizing else {
-            StickyNotesLog.sync.debug(
-                "Automatic sync skipped because sync is already running reason: \(reason.rawValue, privacy: .public)"
-            )
-            return
-        }
         guard !hasLocalLoadFailure else {
             StickyNotesLog.sync.warning(
                 "Automatic sync skipped after local load failure reason: \(reason.rawValue, privacy: .public)"

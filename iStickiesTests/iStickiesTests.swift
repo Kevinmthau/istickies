@@ -253,6 +253,33 @@ struct iStickiesTests {
         #expect(await cloudService.snapshot().contains { $0.id == blockedNote.id })
     }
 
+    @Test func automaticSyncQueuedDuringDirectSyncRunsNext() async {
+        let cloudService = MockCloudService(fetchDelay: .milliseconds(100))
+        let store = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: temporaryStoreURL()),
+            cloudService: cloudService,
+            delayedTaskScheduler: TestDelayedTaskScheduler(),
+            autoLoad: false
+        )
+        await store.load()
+
+        let activeSync = Task { await store.syncNow() }
+        var didEnterFirstFetch = false
+        for _ in 0..<1_000 {
+            if await cloudService.fetchCount() == 1 {
+                didEnterFirstFetch = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(didEnterFirstFetch)
+
+        await store.syncAutomatically(reason: .networkRestored)
+        await activeSync.value
+
+        #expect(await cloudService.fetchCount() == 2)
+    }
+
     @Test func ordinarySyncQueuedDuringFailedPassUploadsNewerEdit() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let originalNote = StickyNote(
@@ -1101,13 +1128,42 @@ struct iStickiesTests {
         )
     }
 
-    @Test func cloudSaveVerificationPolicyQuarantinesOnlyAttemptedUnresolvedSaves() {
+    @Test func cloudSaveVerificationPolicyQuarantinesOnlyMaterializedUnresolvedSaves() {
         let noteIDs = CloudSaveVerificationPolicy.noteIDsRequiringVerification(
-            attemptedNoteIDs: ["attempted-and-resolved", "attempted-and-unresolved"],
-            unresolvedNoteIDs: ["attempted-and-unresolved", "unattempted-and-unresolved"]
+            attemptedNoteIDs: [
+                "attempted-and-resolved",
+                "materialized-and-unresolved",
+                "unmaterialized-and-unresolved",
+            ],
+            materializedNoteIDs: [
+                "attempted-and-resolved",
+                "materialized-and-unresolved",
+                "unattempted-and-unresolved",
+            ],
+            unresolvedNoteIDs: [
+                "materialized-and-unresolved",
+                "unmaterialized-and-unresolved",
+                "unattempted-and-unresolved",
+            ]
         )
 
-        #expect(noteIDs == ["attempted-and-unresolved"])
+        #expect(noteIDs == ["materialized-and-unresolved"])
+    }
+
+    @Test func cloudKitSendBatchTrackerTracksMaterializedSavesAwaitingResponse() {
+        var tracker = CloudKitSendBatchTracker()
+        tracker.begin(
+            expectedSaveNoteIDs: ["first-batch", "second-batch", "not-attempted"],
+            expectedDeleteNoteIDs: []
+        )
+        tracker.beginSendAttempt(noteIDs: ["first-batch", "second-batch"])
+
+        tracker.markMaterializedSaveNoteIDs(["first-batch", "not-attempted"])
+        #expect(tracker.saveNoteIDsAwaitingResponseInCurrentAttempt == ["first-batch"])
+
+        tracker.markSaveResponsesReceived(noteIDs: ["first-batch"])
+        tracker.markMaterializedSaveNoteIDs(["second-batch"])
+        #expect(tracker.saveNoteIDsAwaitingResponseInCurrentAttempt == ["second-batch"])
     }
 
     @Test func cloudKitScopedSaveRetryRequeuesEveryScopedRecord() {
