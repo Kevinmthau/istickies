@@ -229,6 +229,8 @@ final class StickyNotesStore: ObservableObject {
     }
 
     func updateContent(id: String, content: String) {
+        guard notesByID[id]?.content != content else { return }
+
         mutateNote(
             id: id,
             touchModifiedAt: true,
@@ -484,6 +486,7 @@ final class StickyNotesStore: ObservableObject {
         mutation(&updated)
         if markNeedsCloudUpload {
             updated.needsCloudUpload = true
+            updated.cloudUploadBlock = nil
         }
         if touchModifiedAt {
             updated.lastModified = Date()
@@ -498,7 +501,7 @@ final class StickyNotesStore: ObservableObject {
     }
 
     private var hasPendingCloudChanges: Bool {
-        notesByID.values.contains(where: \.needsCloudUpload) || !pendingDeletionIDs.isEmpty
+        notesByID.values.contains(where: \.shouldAttemptCloudUpload) || !pendingDeletionIDs.isEmpty
     }
 
     private var dirtyNoteCount: Int {

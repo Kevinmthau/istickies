@@ -1044,7 +1044,7 @@ struct iStickiesTests {
         #expect(result.failureMessage == "Cannot create or modify field 'titleOverride'")
     }
 
-    @Test func syncApplyStopsResendingPermanentlyRejectedNotes() throws {
+    @Test func syncApplyBlocksPermanentlyRejectedNotesWithoutMarkingThemClean() throws {
         let sentNote = StickyNote(
             id: "rejected-note",
             content: "Local draft",
@@ -1060,10 +1060,82 @@ struct iStickiesTests {
             sentNotesByID: [sentNote.id: sentNote]
         )
         let rejectedNote = try #require(outcome.notes.first)
+        let outgoingChanges = StickyNotesSyncCoordinator(cloudService: MockCloudService())
+            .outgoingChanges(
+                from: StickyNotesSyncLocalState(notes: outcome.notes, pendingDeletionIDs: [])
+            )
 
-        #expect(rejectedNote.needsCloudUpload == false)
+        #expect(rejectedNote.needsCloudUpload)
+        #expect(rejectedNote.cloudUploadBlock == .permanentlyRejected)
+        #expect(!rejectedNote.shouldAttemptCloudUpload)
         #expect(rejectedNote.content == "Local draft")
         #expect(rejectedNote.titleOverride == "Conflict Copy")
+        #expect(outgoingChanges.saves.isEmpty)
+        #expect(outgoingChanges.savesByID.isEmpty)
+    }
+
+    @Test func permanentlyRejectedNewNoteSurvivesNextCompleteRemoteSnapshot() throws {
+        let sentNote = StickyNote(
+            id: "rejected-new-note",
+            content: "Only local copy",
+            lastModified: Date(timeIntervalSince1970: 30),
+            needsCloudUpload: true
+        )
+        let rejectionOutcome = StickyNotesMergeEngine.apply(
+            syncResult: CloudSyncBatchResult(permanentlyRejectedSaveNoteIDs: [sentNote.id]),
+            to: [sentNote],
+            pendingDeletionIDs: [],
+            sentNotesByID: [sentNote.id: sentNote]
+        )
+
+        let nextMerge = StickyNotesMergeEngine.merge(
+            localNotes: rejectionOutcome.notes,
+            remoteNotes: [],
+            pendingDeletionIDs: [],
+            remoteSnapshotCompleteness: .complete
+        )
+        let preservedNote = try #require(nextMerge.notes.first)
+
+        #expect(nextMerge.notes.count == 1)
+        #expect(preservedNote.id == sentNote.id)
+        #expect(preservedNote.content == "Only local copy")
+        #expect(preservedNote.needsCloudUpload)
+        #expect(preservedNote.cloudUploadBlock == .permanentlyRejected)
+    }
+
+    @Test func permanentlyRejectedEditSurvivesStaleRemoteSnapshot() throws {
+        let sentNote = StickyNote(
+            id: "rejected-edit",
+            content: "Unsynced local edit",
+            lastModified: Date(timeIntervalSince1970: 30),
+            needsCloudUpload: true,
+            cloudRevision: "remote-base"
+        )
+        let remoteBase = StickyNote(
+            id: sentNote.id,
+            content: "Older remote content",
+            lastModified: Date(timeIntervalSince1970: 20),
+            needsCloudUpload: false,
+            cloudRevision: "remote-base"
+        )
+        let rejectionOutcome = StickyNotesMergeEngine.apply(
+            syncResult: CloudSyncBatchResult(permanentlyRejectedSaveNoteIDs: [sentNote.id]),
+            to: [sentNote],
+            pendingDeletionIDs: [],
+            sentNotesByID: [sentNote.id: sentNote]
+        )
+
+        let nextMerge = StickyNotesMergeEngine.merge(
+            localNotes: rejectionOutcome.notes,
+            remoteNotes: [remoteBase],
+            pendingDeletionIDs: [],
+            remoteSnapshotCompleteness: .complete
+        )
+        let preservedNote = try #require(nextMerge.notes.first)
+
+        #expect(nextMerge.notes.count == 1)
+        #expect(preservedNote.content == "Unsynced local edit")
+        #expect(preservedNote.cloudUploadBlock == .permanentlyRejected)
     }
 
     @Test func syncApplyKeepsPermanentlyRejectedNotesDirtyAfterNewerLocalEdits() throws {
@@ -1086,7 +1158,72 @@ struct iStickiesTests {
         let retriedNote = try #require(outcome.notes.first)
 
         #expect(retriedNote.needsCloudUpload)
+        #expect(retriedNote.cloudUploadBlock == nil)
+        #expect(retriedNote.shouldAttemptCloudUpload)
         #expect(retriedNote.content == "Second draft")
+    }
+
+    @Test func rejectedUploadPersistsWithoutRetryAndRetriesAfterContentEdit() async throws {
+        let fileURL = temporaryStoreURL()
+        let fileStore = StickyNotesFileStore(fileURL: fileURL)
+        let rejectionService = PermanentlyRejectingCloudService()
+        let rejectionScheduler = TestDelayedTaskScheduler()
+        let store = StickyNotesStore(
+            fileStore: fileStore,
+            cloudService: rejectionService,
+            delayedTaskScheduler: rejectionScheduler,
+            autoLoad: false
+        )
+
+        await store.load()
+        let noteID = store.createNote()
+        await rejectionScheduler.runNext()
+        await store.flushPendingPersistence()
+
+        let rejectedNote = try #require(store.note(withID: noteID))
+        let persistedSnapshot = try await fileStore.load()
+        let persistedNote = try #require(persistedSnapshot.notes.first(where: { $0.id == noteID }))
+        #expect(rejectedNote.needsCloudUpload)
+        #expect(rejectedNote.cloudUploadBlock == .permanentlyRejected)
+        #expect(persistedNote.cloudUploadBlock == .permanentlyRejected)
+        #expect(rejectionScheduler.pendingOperationCount == 0)
+        #expect(await rejectionService.saveAttemptCount() == 1)
+
+        let acceptingService = MockCloudService()
+        let retryScheduler = TestDelayedTaskScheduler()
+        let reloadedStore = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: fileURL),
+            cloudService: acceptingService,
+            delayedTaskScheduler: retryScheduler,
+            autoLoad: false
+        )
+
+        await reloadedStore.load()
+        await reloadedStore.syncNow()
+
+        let protectedNote = try #require(reloadedStore.note(withID: noteID))
+        #expect(protectedNote.cloudUploadBlock == .permanentlyRejected)
+        #expect(await acceptingService.snapshot().isEmpty)
+
+        reloadedStore.updateContent(id: noteID, content: protectedNote.content)
+        reloadedStore.updatePreferredFrame(
+            id: noteID,
+            frame: StickyNoteFrame(x: 20, y: 30, width: 280, height: 280)
+        )
+        #expect(reloadedStore.note(withID: noteID)?.cloudUploadBlock == .permanentlyRejected)
+
+        reloadedStore.updateContent(id: noteID, content: "Retry this content")
+        let unblockedNote = try #require(reloadedStore.note(withID: noteID))
+        #expect(unblockedNote.cloudUploadBlock == nil)
+        #expect(unblockedNote.shouldAttemptCloudUpload)
+
+        await retryScheduler.runAll()
+
+        let uploadedNote = try #require(reloadedStore.note(withID: noteID))
+        #expect(uploadedNote.content == "Retry this content")
+        #expect(uploadedNote.needsCloudUpload == false)
+        #expect(uploadedNote.cloudUploadBlock == nil)
+        #expect(await acceptingService.snapshot().contains { $0.id == noteID })
     }
 
     @Test func mergeKeepsLocalTitleOverrideWhenRemoteNoteWins() throws {
@@ -3143,6 +3280,34 @@ private actor MockCloudService: StickyNotesCloudSyncing {
 
     func fetchCount() -> Int {
         fetchCallCount
+    }
+}
+
+private actor PermanentlyRejectingCloudService: StickyNotesCloudSyncing {
+    private var attemptedSaveCount = 0
+
+    func restore(persistedState: StickyNotesCloudPersistedState) async {}
+
+    func currentPersistedState() async -> StickyNotesCloudPersistedState {
+        StickyNotesCloudPersistedState()
+    }
+
+    func fetchAllNotes() async throws -> CloudRemoteSnapshot {
+        .complete(notes: [])
+    }
+
+    func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {
+        attemptedSaveCount += saves.count
+        guard !saves.isEmpty else { return CloudSyncBatchResult() }
+
+        return CloudSyncBatchResult(
+            permanentlyRejectedSaveNoteIDs: saves.map(\.id),
+            failureMessage: "CloudKit permanently rejected the record."
+        )
+    }
+
+    func saveAttemptCount() -> Int {
+        attemptedSaveCount
     }
 }
 

@@ -846,8 +846,8 @@ actor CloudKitStickyNotesCloudService: StickyNotesCloudSyncing {
                 rejectedSaveCount += 1
                 StickyNotesLog.cloudKit.error(
                     """
-                    CloudKit permanently rejected a record save noteID: \(noteID, privacy: .public) \
-                    error: \(classification.message, privacy: .private)
+                    CloudKit permanently rejected a record save: \
+                    \(classification.message, privacy: .private)
                     """
                 )
             case .terminal:

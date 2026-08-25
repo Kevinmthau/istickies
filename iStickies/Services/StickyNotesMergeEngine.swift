@@ -165,14 +165,18 @@ enum StickyNotesMergeEngine {
         in notes: inout [StickyNote],
         sentNotesByID: [String: StickyNote]
     ) {
-        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        guard let index = notes.firstIndex(where: { $0.id == noteID }),
+              sentNotesByID[noteID] != nil
+        else {
+            return
+        }
 
         // A local edit made after the send is a different record, so let it try again. Otherwise
-        // stop resending a record the server refuses; leaving it dirty spins the retry loop and
-        // re-raises the same sync alert forever.
+        // keep the rejected payload dirty and merge-protected while blocking automatic retries.
         guard !hasCloudChangesSinceSend(notes[index], sentNotesByID: sentNotesByID) else { return }
 
-        notes[index] = notes[index].markedClean()
+        notes[index].needsCloudUpload = true
+        notes[index].cloudUploadBlock = .permanentlyRejected
     }
 
     private static func hasCloudChangesSinceSend(

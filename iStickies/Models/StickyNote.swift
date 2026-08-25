@@ -7,6 +7,10 @@ struct StickyNoteFrame: Codable, Equatable, Sendable {
     var height: Double
 }
 
+enum StickyNoteCloudUploadBlock: String, Codable, Equatable, Sendable {
+    case permanentlyRejected
+}
+
 struct StickyNote: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var content: String
@@ -17,6 +21,7 @@ struct StickyNote: Identifiable, Codable, Equatable, Sendable {
     var isOpen: Bool
     var preferredFrame: StickyNoteFrame?
     var needsCloudUpload: Bool
+    var cloudUploadBlock: StickyNoteCloudUploadBlock?
     var cloudKitSystemFieldsData: Data?
     var cloudRevision: String?
 
@@ -30,6 +35,7 @@ struct StickyNote: Identifiable, Codable, Equatable, Sendable {
         isOpen: Bool = true,
         preferredFrame: StickyNoteFrame? = nil,
         needsCloudUpload: Bool = true,
+        cloudUploadBlock: StickyNoteCloudUploadBlock? = nil,
         cloudKitSystemFieldsData: Data? = nil,
         cloudRevision: String? = nil
     ) {
@@ -42,6 +48,7 @@ struct StickyNote: Identifiable, Codable, Equatable, Sendable {
         self.isOpen = isOpen
         self.preferredFrame = preferredFrame
         self.needsCloudUpload = needsCloudUpload
+        self.cloudUploadBlock = cloudUploadBlock
         self.cloudKitSystemFieldsData = cloudKitSystemFieldsData
         self.cloudRevision = cloudRevision
     }
@@ -71,9 +78,14 @@ struct StickyNote: Identifiable, Codable, Equatable, Sendable {
         return String(collapsed.prefix(80))
     }
 
+    var shouldAttemptCloudUpload: Bool {
+        needsCloudUpload && cloudUploadBlock == nil
+    }
+
     func markedClean() -> StickyNote {
         var copy = self
         copy.needsCloudUpload = false
+        copy.cloudUploadBlock = nil
         return copy
     }
 

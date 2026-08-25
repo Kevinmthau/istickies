@@ -88,7 +88,7 @@ struct StickyNotesSyncCoordinator: Sendable {
     func outgoingChanges(
         from localState: StickyNotesSyncLocalState
     ) -> StickyNotesOutgoingCloudChanges {
-        let outgoingSaves = localState.notes.filter(\.needsCloudUpload)
+        let outgoingSaves = localState.notes.filter(\.shouldAttemptCloudUpload)
         return StickyNotesOutgoingCloudChanges(
             saves: outgoingSaves,
             deletions: Array(localState.pendingDeletionIDs),
