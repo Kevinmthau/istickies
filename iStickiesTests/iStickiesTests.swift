@@ -253,6 +253,168 @@ struct iStickiesTests {
         #expect(await cloudService.snapshot().contains { $0.id == blockedNote.id })
     }
 
+    @Test func refreshWaitsForQueuedPassAndRetriesBlockedUpload() async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let blockedNote = StickyNote(
+            id: "blocked-note",
+            content: "Retry this note",
+            needsCloudUpload: true,
+            cloudUploadBlock: .permanentlyRejected
+        )
+        try await fileStore.save(StickyNotesSnapshot(notes: [blockedNote]))
+        let cloudService = RefreshTestCloudService(gateFetches: true)
+        let scheduler = TestDelayedTaskScheduler()
+        let store = StickyNotesStore(
+            fileStore: fileStore,
+            cloudService: cloudService,
+            delayedTaskScheduler: scheduler,
+            autoLoad: false
+        )
+        await store.load()
+        let newNoteID = store.createNote()
+        await store.flushPendingPersistence()
+        defer { Task { await cloudService.releaseAllFetches() } }
+
+        let activeSync = Task { await store.syncNow() }
+        try #require(await cloudService.waitForFetchCount(1))
+        var refreshFinished = false
+        let refresh = Task {
+            await store.refreshFromCloud()
+            refreshFinished = true
+        }
+        // Cancelling the queued edit sync signals that refresh has reached its
+        // request while the first fetch is still held by the gate.
+        let refreshDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while scheduler.cancelledOperationCount == 0 && ContinuousClock.now < refreshDeadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        try #require(scheduler.cancelledOperationCount == 1)
+        await cloudService.releaseFetch(1)
+        try #require(await cloudService.waitForFetchCount(2))
+
+        #expect(!refreshFinished)
+        #expect(await cloudService.sentSaveIDs() == [[newNoteID]])
+        #expect(store.note(withID: blockedNote.id)?.cloudUploadBlock == .permanentlyRejected)
+
+        await cloudService.releaseFetch(2)
+        await refresh.value
+        await activeSync.value
+
+        #expect(refreshFinished)
+        #expect(await cloudService.sentSaveIDs() == [[newNoteID], [blockedNote.id]])
+        #expect(store.note(withID: blockedNote.id)?.needsCloudUpload == false)
+        #expect(store.note(withID: blockedNote.id)?.cloudUploadBlock == nil)
+        #expect(store.lastErrorMessage == nil)
+    }
+
+    @Test func cancellingRefreshCallerDoesNotCancelCloudFetch() async throws {
+        let remoteNote = StickyNote(id: "remote-note", content: "Arrived from cloud", needsCloudUpload: false)
+        let cloudService = RefreshTestCloudService(remoteNotes: [remoteNote], gateFetches: true)
+        let store = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: temporaryStoreURL()),
+            cloudService: cloudService,
+            delayedTaskScheduler: TestDelayedTaskScheduler(),
+            autoLoad: false
+        )
+        await store.load()
+        defer { Task { await cloudService.releaseAllFetches() } }
+
+        let refresh = Task { await store.refreshFromCloud() }
+        try #require(await cloudService.waitForFetchCount(1))
+        refresh.cancel()
+        await cloudService.releaseFetch(1)
+        await refresh.value
+
+        #expect(await cloudService.observedCancelledFetch() == false)
+        #expect(store.note(withID: remoteNote.id)?.content == remoteNote.content)
+        #expect(store.lastSuccessfulCloudSync != nil)
+        #expect(store.syncState == .idle)
+        #expect(store.lastErrorMessage == nil)
+    }
+
+    @Test func refreshPersistsPendingEditsBeforeFetchingAndItsResultBeforeReturning() async throws {
+        let fileURL = temporaryStoreURL()
+        let fileStore = StickyNotesFileStore(fileURL: fileURL)
+        let note = StickyNote(id: "edited-note", content: "Original", needsCloudUpload: false)
+        try await fileStore.save(StickyNotesSnapshot(notes: [note]))
+        let cloudService = SnapshotReadingCloudService(fileURL: fileURL)
+        let scheduler = TestDelayedTaskScheduler()
+        let store = StickyNotesStore(
+            fileStore: fileStore,
+            cloudService: cloudService,
+            delayedTaskScheduler: scheduler,
+            autoLoad: false
+        )
+        await store.load()
+        store.updateContent(id: note.id, content: "Latest edit")
+
+        await store.refreshFromCloud()
+
+        #expect(await cloudService.persistedContentsAtFetch() == [["Latest edit"]])
+        let persisted = try await fileStore.load()
+        #expect(persisted.notes.first?.content == "Latest edit")
+        #expect(persisted.notes.first?.needsCloudUpload == false)
+        #expect(persisted.lastSuccessfulCloudSync != nil)
+        #expect(scheduler.pendingOperationCount == 0)
+    }
+
+    @Test(arguments: RefreshTestFailure.allCases)
+    func failedRefreshPreservesPendingWorkWithoutPresentingCloudError(_ failure: RefreshTestFailure) async throws {
+        let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
+        let previousSyncDate = Date(timeIntervalSince1970: 30)
+        let dirtyNote = StickyNote(id: "dirty-note", content: "Unsynced edit", needsCloudUpload: true)
+        let blockedNote = StickyNote(
+            id: "blocked-note",
+            content: "Protected local content",
+            needsCloudUpload: true,
+            cloudUploadBlock: .permanentlyRejected
+        )
+        try await fileStore.save(StickyNotesSnapshot(
+            notes: [dirtyNote, blockedNote],
+            pendingDeletionIDs: ["deleted-note"],
+            lastSuccessfulCloudSync: previousSyncDate
+        ))
+        let scheduler = TestDelayedTaskScheduler()
+        let store = StickyNotesStore(
+            fileStore: fileStore,
+            cloudService: RefreshTestCloudService(failure: failure),
+            delayedTaskScheduler: scheduler,
+            autoLoad: false
+        )
+        await store.load()
+
+        await store.refreshFromCloud()
+
+        #expect(store.note(withID: dirtyNote.id)?.content == dirtyNote.content)
+        #expect(store.note(withID: dirtyNote.id)?.needsCloudUpload == true)
+        #expect(store.note(withID: blockedNote.id)?.cloudUploadBlock == .permanentlyRejected)
+        #expect(store.lastErrorMessage == nil)
+        #expect(store.lastSuccessfulCloudSync == previousSyncDate)
+        if case .failed = store.syncState {} else {
+            Issue.record("Cloud failure should remain available in diagnostic sync state")
+        }
+        let persisted = try await fileStore.load()
+        #expect(Set(persisted.notes.map(\.id)) == [dirtyNote.id, blockedNote.id])
+        #expect(persisted.notes.allSatisfy { $0.needsCloudUpload })
+        #expect(persisted.pendingDeletionIDs == ["deleted-note"])
+        #expect(persisted.lastSuccessfulCloudSync == previousSyncDate)
+        #expect(scheduler.pendingOperationCount == 0)
+    }
+
+    @Test func refreshBeforeLocalLoadDoesNotContactCloud() async {
+        let cloudService = MockCloudService()
+        let store = StickyNotesStore(
+            fileStore: StickyNotesFileStore(fileURL: temporaryStoreURL()),
+            cloudService: cloudService,
+            autoLoad: false
+        )
+
+        await store.refreshFromCloud()
+
+        #expect(await cloudService.fetchCount() == 0)
+        #expect(store.hasFinishedInitialLoad == false)
+    }
+
     @Test func automaticSyncQueuedDuringDirectSyncRunsNext() async {
         let cloudService = MockCloudService(fetchDelay: .milliseconds(100))
         let store = StickyNotesStore(
@@ -811,6 +973,7 @@ struct iStickiesTests {
         await store.load()
         store.createNote()
         await store.syncNow()
+        await store.refreshFromCloud()
         await store.flushPendingPersistence()
 
         #expect(FileManager.default.fileExists(atPath: fileURL.path) == false)
@@ -3602,7 +3765,7 @@ struct iStickiesTests {
         _ = cancellable
     }
 
-    @Test func statusObservationTracksSyncErrorsAndClearing() async throws {
+    @Test func statusObservationKeepsCloudFailuresOutOfUserAlerts() async throws {
         let fileStore = StickyNotesFileStore(fileURL: temporaryStoreURL())
         let cloudService = MockCloudService(
             remoteSnapshotCompleteness: .unavailable("CloudKit fetch failed.")
@@ -3615,9 +3778,6 @@ struct iStickiesTests {
 
         await store.syncNow()
         #expect(statusObservation.syncState == .failed("CloudKit fetch failed."))
-        #expect(statusObservation.lastErrorMessage == "Cloud sync failed: CloudKit fetch failed.")
-
-        store.clearLastErrorMessage()
         #expect(statusObservation.lastErrorMessage == nil)
     }
 
@@ -4832,6 +4992,100 @@ private actor VerificationLifecycleCloudService: StickyNotesCloudSyncing {
 
     func remoteSnapshot() -> [StickyNote] {
         Array(remoteNotesByID.values)
+    }
+}
+
+enum RefreshTestFailure: CaseIterable, Equatable, Sendable {
+    case unavailableSnapshot
+    case cancelledFetch
+    case failedSend
+}
+
+private actor RefreshTestCloudService: StickyNotesCloudSyncing {
+    private var remoteNotesByID: [String: StickyNote]
+    private var gateFetches: Bool
+    private let failure: RefreshTestFailure?
+    private var fetchCallCount = 0
+    private var fetchGates: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var didObserveCancelledFetch = false
+    private var saveBatches: [[String]] = []
+
+    init(
+        remoteNotes: [StickyNote] = [],
+        gateFetches: Bool = false,
+        failure: RefreshTestFailure? = nil
+    ) {
+        remoteNotesByID = Dictionary(uniqueKeysWithValues: remoteNotes.map { ($0.id, $0.markedClean()) })
+        self.gateFetches = gateFetches
+        self.failure = failure
+    }
+
+    func restore(persistedState: StickyNotesCloudPersistedState) async {}
+
+    func currentPersistedState() async -> StickyNotesCloudPersistedState {
+        StickyNotesCloudPersistedState(remoteNotes: Array(remoteNotesByID.values))
+    }
+
+    func fetchAllNotes() async throws -> CloudRemoteSnapshot {
+        fetchCallCount += 1
+        let call = fetchCallCount
+        if gateFetches {
+            await withCheckedContinuation { fetchGates[call] = $0 }
+        }
+        didObserveCancelledFetch = didObserveCancelledFetch || Task.isCancelled
+        try Task.checkCancellation()
+
+        switch failure {
+        case .unavailableSnapshot:
+            return CloudRemoteSnapshot(notes: [], completeness: .unavailable("CloudKit is unavailable."))
+        case .cancelledFetch:
+            throw CKError(.operationCancelled)
+        default:
+            return .complete(notes: Array(remoteNotesByID.values))
+        }
+    }
+
+    func syncChanges(saves: [StickyNote], deletions: [String]) async -> CloudSyncBatchResult {
+        saveBatches.append(saves.map(\.id).sorted())
+        if failure == .failedSend {
+            return CloudSyncBatchResult(failureMessage: "CloudKit send failed.")
+        }
+
+        let savedNotes = saves.map { $0.markedClean() }
+        for note in savedNotes {
+            remoteNotesByID[note.id] = note
+        }
+        for id in deletions {
+            remoteNotesByID.removeValue(forKey: id)
+        }
+        return CloudSyncBatchResult(savedNotes: savedNotes, deletedNoteIDs: deletions)
+    }
+
+    func waitForFetchCount(_ count: Int) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while fetchCallCount < count && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return fetchCallCount >= count
+    }
+
+    func releaseFetch(_ call: Int) {
+        fetchGates.removeValue(forKey: call)?.resume()
+    }
+
+    func releaseAllFetches() {
+        gateFetches = false
+        let gates = fetchGates.values
+        fetchGates.removeAll()
+        for gate in gates { gate.resume() }
+    }
+
+    func observedCancelledFetch() -> Bool {
+        didObserveCancelledFetch
+    }
+
+    func sentSaveIDs() -> [[String]] {
+        saveBatches
     }
 }
 

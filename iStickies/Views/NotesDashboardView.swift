@@ -403,11 +403,7 @@ private struct StickyNotesSyncModifier: ViewModifier {
                     Task { await store.flushPendingPersistence() }
                 }
             }
-            .alert("Sync Issue", isPresented: syncErrorBinding) {
-                Button("Retry") {
-                    store.clearLastErrorMessage()
-                    Task { await store.syncNow(retryingBlockedUploads: true) }
-                }
+            .alert("Local Storage Issue", isPresented: localErrorBinding) {
                 Button("Dismiss", role: .cancel) {
                     store.clearLastErrorMessage()
                 }
@@ -416,7 +412,7 @@ private struct StickyNotesSyncModifier: ViewModifier {
             }
     }
 
-    private var syncErrorBinding: Binding<Bool> {
+    private var localErrorBinding: Binding<Bool> {
         Binding(
             get: {
                 statusObservation.localRecoveryIssue == nil
@@ -570,8 +566,9 @@ private struct MobileNotesSceneContent: View {
                                     }
                                 }
                                 .refreshable {
-                                    await store.syncNow(retryingBlockedUploads: true)
+                                    await store.refreshFromCloud()
                                 }
+                                .scrollBounceBehavior(.always, axes: .vertical)
                                 .scrollDismissesKeyboard(.interactively)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 #if os(iOS)

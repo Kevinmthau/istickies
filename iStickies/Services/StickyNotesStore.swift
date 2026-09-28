@@ -89,6 +89,7 @@ final class StickyNotesStore: ObservableObject {
     private var isSynchronizing = false
     private var pendingSyncRequest = false
     private var pendingBlockedUploadRetry = false
+    private var syncCompletionWaiters: [CheckedContinuation<Void, Never>] = []
     private var scheduledSyncTask: StickyNotesDelayedTask?
     private var scheduledPersistenceTask: StickyNotesDelayedTask?
     private var persistenceTask: Task<Void, Never>?
@@ -374,6 +375,25 @@ final class StickyNotesStore: ObservableObject {
         await syncNow()
     }
 
+    func refreshFromCloud() async {
+        // Keep CloudKit work independent of SwiftUI's refresh task lifetime.
+        await Task { @MainActor in
+            await flushPendingPersistence()
+            scheduledSyncTask?.cancel()
+            scheduledSyncTask = nil
+            await syncNow(retryingBlockedUploads: true)
+
+            // An active sync queues the request and returns immediately. Keep the
+            // refresh indicator active until that queued pass has also finished.
+            if isSynchronizing {
+                await withCheckedContinuation { continuation in
+                    syncCompletionWaiters.append(continuation)
+                }
+            }
+            await flushPendingPersistence()
+        }.value
+    }
+
     func syncNow(retryingBlockedUploads: Bool = false) async {
         guard hasLoaded else { return }
         guard !hasLocalLoadFailure else {
@@ -390,7 +410,14 @@ final class StickyNotesStore: ObservableObject {
         }
 
         isSynchronizing = true
-        defer { isSynchronizing = false }
+        defer {
+            isSynchronizing = false
+            let waiters = syncCompletionWaiters
+            syncCompletionWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
 
         var shouldRetryBlockedUploads = retryingBlockedUploads || pendingBlockedUploadRetry
         repeat {
@@ -446,7 +473,6 @@ final class StickyNotesStore: ObservableObject {
             cachedCloudPersistedState = await syncCoordinator.currentPersistedState(
                 after: mergeTransition.remoteSnapshotCompleteness
             )
-            lastErrorMessage = nil
             syncState = .idle
             persistSnapshot()
             StickyNotesLog.sync.info(
@@ -468,7 +494,8 @@ final class StickyNotesStore: ObservableObject {
             cachedCloudPersistedState = await syncCoordinator.currentPersistedState(
                 after: remoteSnapshotCompleteness
             )
-            lastErrorMessage = "Cloud sync failed: \(error.localizedDescription)"
+            // Cloud failures remain in sync state and diagnostics. Pending local
+            // changes stay available for a later sync without interrupting editing.
             persistSnapshot()
             StickyNotesLog.sync.error(
                 """
