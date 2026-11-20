@@ -51,19 +51,19 @@ enum StickyTextEditorLayout {
 }
 
 enum StickyNoteTypography {
-    static let bodySize: CGFloat = 18
-    static let cardTitleSize: CGFloat = 20
-    static let editorSize: CGFloat = 19
+    static let bodySize: CGFloat = 16
+    static let cardTitleSize: CGFloat = 18
+    static let editorSize: CGFloat = 17
 
-    private static let bundledHandwrittenFontResource = "Cedarville-Cursive"
-    private static let bundledHandwrittenFontName = "Cedarville-Cursive"
+    private static let bundledHandwrittenFontResource = "PermanentMarker-Regular"
+    private static let bundledHandwrittenFontName = "PermanentMarker-Regular"
 
     private static let handwrittenFontNames = [
         bundledHandwrittenFontName,
-        "Noteworthy-Light",
+        "MarkerFelt-Wide",
         "MarkerFelt-Thin",
-        "ChalkboardSE-Regular",
-        "BradleyHandITCTT-Bold"
+        "ChalkboardSE-Bold",
+        "Noteworthy-Bold"
     ]
 
     private static func registerBundledFontsIfNeeded() {
