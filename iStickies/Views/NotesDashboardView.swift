@@ -319,6 +319,7 @@ enum StickyNoteDisplayOrder {
 
 struct StickyNoteCardView: View {
     @ObservedObject private var noteObservation: StickyNoteObservation
+    @ScaledMetric(relativeTo: .body) private var cardTitleSize = StickyNoteTypography.cardTitleSize
 
     init(noteObservation: StickyNoteObservation) {
         self._noteObservation = ObservedObject(wrappedValue: noteObservation)
@@ -329,7 +330,7 @@ struct StickyNoteCardView: View {
             StickyNoteCard(color: note.color.tint) {
                 ZStack(alignment: .topTrailing) {
                     Text(note.content.isEmpty ? "Empty Note" : note.title)
-                        .font(StickyNoteTypography.cardTitleFont)
+                        .font(StickyNoteTypography.cardTitleFont(size: cardTitleSize))
                         .foregroundStyle(Color.black.opacity(0.92))
                         .lineLimit(1)
                         .minimumScaleFactor(0.68)

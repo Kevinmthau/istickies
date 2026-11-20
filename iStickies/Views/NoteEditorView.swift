@@ -51,19 +51,18 @@ enum StickyTextEditorLayout {
 }
 
 enum StickyNoteTypography {
-    static let bodySize: CGFloat = 18
-    static let cardTitleSize: CGFloat = 20
-    static let editorSize: CGFloat = 19
+    static let cardTitleSize: CGFloat = 18
+    static let editorSize: CGFloat = 17
 
-    private static let bundledHandwrittenFontResource = "Cedarville-Cursive"
-    private static let bundledHandwrittenFontName = "Cedarville-Cursive"
+    private static let bundledHandwrittenFontResource = "PermanentMarker-Regular"
+    private static let bundledHandwrittenFontName = "PermanentMarker-Regular"
 
     private static let handwrittenFontNames = [
         bundledHandwrittenFontName,
-        "Noteworthy-Light",
+        "MarkerFelt-Wide",
         "MarkerFelt-Thin",
-        "ChalkboardSE-Regular",
-        "BradleyHandITCTT-Bold"
+        "ChalkboardSE-Bold",
+        "Noteworthy-Bold"
     ]
 
     private static func registerBundledFontsIfNeeded() {
@@ -79,34 +78,65 @@ enum StickyNoteTypography {
         _ = CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
     }
 
+    // Permanent Marker only covers Basic Latin and Latin-1. Characters outside that
+    // (most of Latin Extended-A: Polish, Czech, Turkish, ...) would otherwise fall back
+    // to a thin system face mid-word, so the remaining handwritten faces are attached as
+    // an explicit cascade list and tried first.
+
 #if os(macOS)
-    private static let handwrittenFontName: String = {
+    private static let availableHandwrittenFontNames: [String] = {
         registerBundledFontsIfNeeded()
 
-        return handwrittenFontNames.first { NSFont(name: $0, size: editorSize) != nil }
-            ?? NSFont.systemFont(ofSize: editorSize).fontName
+        return handwrittenFontNames.filter { NSFont(name: $0, size: editorSize) != nil }
     }()
 
-    static let bodyFont: Font = .custom(handwrittenFontName, size: bodySize, relativeTo: .body)
-    static let cardTitleFont: Font = .custom(handwrittenFontName, size: cardTitleSize, relativeTo: .body)
-    static let editorFont: NSFont = NSFont(name: handwrittenFontName, size: editorSize)
-        ?? .systemFont(ofSize: editorSize)
+    private static func handwrittenFont(ofSize size: CGFloat) -> NSFont {
+        guard let primaryName = availableHandwrittenFontNames.first,
+              let primaryFont = NSFont(name: primaryName, size: size) else {
+            return .systemFont(ofSize: size)
+        }
+
+        let cascadeList = availableHandwrittenFontNames.dropFirst().map {
+            NSFontDescriptor(name: $0, size: size)
+        }
+        guard !cascadeList.isEmpty else { return primaryFont }
+
+        let descriptor = primaryFont.fontDescriptor.addingAttributes([.cascadeList: cascadeList])
+        return NSFont(descriptor: descriptor, size: size) ?? primaryFont
+    }
+
+    static let editorFont: NSFont = handwrittenFont(ofSize: editorSize)
 #elseif os(iOS)
-    private static let handwrittenFontName: String = {
+    private static let availableHandwrittenFontNames: [String] = {
         registerBundledFontsIfNeeded()
 
-        return handwrittenFontNames.first { UIFont(name: $0, size: editorSize) != nil }
-            ?? UIFont.systemFont(ofSize: editorSize).fontName
+        return handwrittenFontNames.filter { UIFont(name: $0, size: editorSize) != nil }
     }()
 
-    static let bodyFont: Font = .custom(handwrittenFontName, size: bodySize, relativeTo: .body)
-    static let cardTitleFont: Font = .custom(handwrittenFontName, size: cardTitleSize, relativeTo: .body)
-    static let editorFont: UIFont = {
-        let font = UIFont(name: handwrittenFontName, size: editorSize)
-            ?? .systemFont(ofSize: editorSize)
-        return UIFontMetrics(forTextStyle: .body).scaledFont(for: font)
-    }()
+    private static func handwrittenFont(ofSize size: CGFloat) -> UIFont {
+        guard let primaryName = availableHandwrittenFontNames.first,
+              let primaryFont = UIFont(name: primaryName, size: size) else {
+            return .systemFont(ofSize: size)
+        }
+
+        let cascadeList = availableHandwrittenFontNames.dropFirst().map {
+            UIFontDescriptor(name: $0, size: size)
+        }
+        guard !cascadeList.isEmpty else { return primaryFont }
+
+        let descriptor = primaryFont.fontDescriptor.addingAttributes([.cascadeList: cascadeList])
+        return UIFont(descriptor: descriptor, size: size)
+    }
+
+    static let editorFont: UIFont = UIFontMetrics(forTextStyle: .body)
+        .scaledFont(for: handwrittenFont(ofSize: editorSize))
 #endif
+
+    /// Card title font at an already scaled point size. Callers scale `cardTitleSize`
+    /// with `@ScaledMetric(relativeTo: .body)` so the title keeps following Dynamic Type.
+    static func cardTitleFont(size: CGFloat) -> Font {
+        Font(handwrittenFont(ofSize: size) as CTFont)
+    }
 }
 
 struct StickyNoteEditor: View {
